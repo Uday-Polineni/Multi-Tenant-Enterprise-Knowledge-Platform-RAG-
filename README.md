@@ -24,6 +24,8 @@ copy .env.example .env
 
 - API: http://127.0.0.1:8000/docs
 - Health: http://127.0.0.1:8000/health
+- Register: `POST /api/v1/auth/register`
+- Login: `POST /api/v1/auth/login`
 
 **Requirements:** Python 3.11+, PostgreSQL
 
@@ -69,6 +71,6 @@ docs/             # Architecture notes
 
 ## Status
 
-**Day 1 in progress** — auth foundation (register / login).
+**Day 1 complete** — register + login with JWT, multi-tenant org + admin user.
 
-**API versioning:** routes are unversioned until after the first GitHub push; then prefix `/api/v1`.
+Optional next: Docker API service (Step 26), DB health on `/health` (Step 29).
