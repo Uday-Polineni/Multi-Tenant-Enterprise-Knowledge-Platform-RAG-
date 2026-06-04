@@ -8,3 +8,6 @@ venv/
 .mypy_cache/
 .ruff_cache/
 data/
+
+# Local step-by-step build log (not published)
+docs/development.md

@@ -58,18 +58,17 @@ Full decisions: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 | Doc | Purpose |
 |-----|---------|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Design decisions |
-| [docs/development.md](docs/development.md) | Step-by-step build log (Day 1–7) |
 
 ## Project layout
 
 ```
 backend/          # FastAPI application
 docker/           # Docker Compose (optional local / deploy)
-docs/             # Architecture & development notes
+docs/             # Architecture notes
 ```
 
 ## Status
 
-**Day 1 in progress** — auth foundation (register / login). See [development.md](docs/development.md).
+**Day 1 in progress** — auth foundation (register / login).
 
 **API versioning:** routes are unversioned until after the first GitHub push; then prefix `/api/v1`.
