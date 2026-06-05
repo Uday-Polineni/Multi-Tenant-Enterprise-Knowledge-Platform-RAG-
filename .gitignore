@@ -12,6 +12,10 @@ venv/
 backend/data/uploads/*
 !backend/data/uploads/.gitkeep
 
+# Chroma vector store — contents gitignored, folder kept via .gitkeep
+backend/data/chroma/*
+!backend/data/chroma/.gitkeep
+
 # Local step-by-step build log (not published)
 docs/development.md
 

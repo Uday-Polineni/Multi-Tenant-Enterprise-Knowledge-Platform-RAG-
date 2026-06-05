@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { login, register } from "./api/auth.js";
 import { uploadDocument } from "./api/documents.js";
+import { askQuestion } from "./api/query.js";
 
 const TOKEN_KEY = "eka_access_token";
 
@@ -20,6 +21,8 @@ export default function App() {
   });
   const [uploadFile, setUploadFile] = useState(null);
   const [uploadResult, setUploadResult] = useState(null);
+  const [queryQuestion, setQueryQuestion] = useState("");
+  const [queryResult, setQueryResult] = useState(null);
 
   function saveToken(accessToken) {
     localStorage.setItem(TOKEN_KEY, accessToken);
@@ -86,11 +89,36 @@ export default function App() {
     }
   }
 
+  async function handleQuery(e) {
+    e.preventDefault();
+    setError("");
+    setQueryResult(null);
+
+    if (!token) {
+      setError("Login first to ask questions.");
+      return;
+    }
+    if (!queryQuestion.trim()) {
+      setError("Enter a question.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const data = await askQuestion({ question: queryQuestion.trim(), accessToken: token });
+      setQueryResult(data);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <div className="page">
       <header>
         <h1>Enterprise Knowledge Assistant</h1>
-        <p>Day 2 — Register, login &amp; upload PDF</p>
+        <p>Day 3 — Register, upload &amp; ask questions</p>
       </header>
 
       {error && <div className="alert error">{error}</div>}
@@ -194,6 +222,46 @@ export default function App() {
             <strong>{uploadResult.filename}</strong> — {uploadResult.status},{" "}
             {uploadResult.chunk_count} chunk(s)
             <pre className="upload-meta">{JSON.stringify(uploadResult, null, 2)}</pre>
+          </div>
+        )}
+      </section>
+
+      <section className="card token-card">
+        <h2>Ask a question</h2>
+        <p className="hint">Login and upload PDFs first — answers use your org&apos;s indexed documents.</p>
+        <form onSubmit={handleQuery}>
+          <label>
+            Question
+            <textarea
+              required
+              rows={3}
+              value={queryQuestion}
+              placeholder="e.g. How many PTO days do employees receive?"
+              onChange={(e) => setQueryQuestion(e.target.value)}
+            />
+          </label>
+          <button type="submit" disabled={loading || !token}>
+            {loading ? "Searching…" : "Ask"}
+          </button>
+        </form>
+        {queryResult && (
+          <div className="alert success query-result">
+            <p className="answer-text">{queryResult.answer}</p>
+            {queryResult.citations?.length > 0 && (
+              <div className="citations">
+                <strong>Sources</strong>
+                <ul>
+                  {queryResult.citations.map((c) => (
+                    <li key={c.chunk_id}>
+                      {c.document}
+                      {c.page != null && ` · p.${c.page}`}
+                      {c.section && ` · ${c.section}`}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <pre className="upload-meta">{JSON.stringify(queryResult, null, 2)}</pre>
           </div>
         )}
       </section>

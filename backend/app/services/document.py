@@ -1,8 +1,10 @@
 import uuid
 
+from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from app.core.storage import save_pdf
+from app.models.chunk import Chunk
 from app.models.document import Document, DocumentStatus
 from app.repositories.chunk import bulk_create_chunks
 from app.repositories.document import (
@@ -10,6 +12,7 @@ from app.repositories.document import (
     update_document_status,
 )
 from app.services.chunking import chunk_pages
+from app.services.embedding import EmbeddingError, embed_document_chunks
 from app.services.pdf_extract import extract_text_from_pdf
 
 
@@ -40,7 +43,17 @@ def ingest_document(
 
         pages = extract_text_from_pdf(pdf_data)
         text_chunks = chunk_pages(pages)
-        bulk_create_chunks(db, document_id=document.id, chunks=text_chunks)
+        chunk_rows = bulk_create_chunks(db, document_id=document.id, chunks=text_chunks)
+        try:
+            embed_document_chunks(
+                organization_id=organization_id,
+                document=document,
+                chunks=chunk_rows,
+            )
+        except EmbeddingError:
+            db.execute(delete(Chunk).where(Chunk.document_id == document.id))
+            db.flush()
+            raise
 
         update_document_status(db, document=document, status=DocumentStatus.READY)
     except Exception:

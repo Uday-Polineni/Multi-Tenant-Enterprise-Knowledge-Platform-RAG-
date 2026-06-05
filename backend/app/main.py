@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.auth.router import router as auth_router
 from app.api.documents.router import router as documents_router
+from app.api.query.router import router as query_router
 
 app = FastAPI(
     title="Enterprise Knowledge Assistant",
@@ -23,6 +24,7 @@ app.add_middleware(
 
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(documents_router, prefix="/api/v1")
+app.include_router(query_router, prefix="/api/v1")
 
 
 @app.get("/health")

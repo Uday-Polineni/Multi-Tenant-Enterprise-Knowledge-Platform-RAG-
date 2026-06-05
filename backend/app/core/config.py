@@ -17,6 +17,12 @@ class Settings(BaseSettings):
 
     upload_dir: str = "data/uploads"
 
+    # Day 3 — AI + vector store
+    openai_api_key: str
+    chroma_persist_dir: str = "data/chroma"
+    embedding_model: str = "text-embedding-3-small"
+    llm_model: str = "gpt-4o-mini"
+
 
 @lru_cache
 def get_settings() -> Settings:
