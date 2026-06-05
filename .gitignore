@@ -7,7 +7,14 @@ venv/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-data/
+
+# PDF uploads — contents gitignored, folder kept via .gitkeep
+backend/data/uploads/*
+!backend/data/uploads/.gitkeep
 
 # Local step-by-step build log (not published)
 docs/development.md
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
