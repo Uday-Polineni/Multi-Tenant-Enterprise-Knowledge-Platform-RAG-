@@ -12,3 +12,8 @@ class EmbeddingProvider(Protocol):
 class LLMProvider(Protocol):
     def complete(self, *, system: str, user: str) -> str:
         """Return the model's text response for a system + user prompt."""
+
+
+class RerankerProvider(Protocol):
+    def rerank(self, query: str, passages: list[str]) -> list[int]:
+        """Return passage indices sorted by relevance to the query (best first)."""

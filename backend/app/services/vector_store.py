@@ -1,3 +1,4 @@
+import logging
 import uuid
 from dataclasses import dataclass
 from functools import lru_cache
@@ -5,9 +6,19 @@ from pathlib import Path
 
 import chromadb
 from chromadb.api.models.Collection import Collection
+from chromadb.errors import InternalError as ChromaInternalError
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.models.chunk import Chunk
+from app.models.document import Document, DocumentStatus
+
+logger = logging.getLogger(__name__)
+
+
+class VectorIndexCorruptedError(Exception):
+    """Chroma index is inconsistent and must be repaired from Postgres."""
 
 
 @dataclass
@@ -42,6 +53,21 @@ def get_org_collection(organization_id: uuid.UUID) -> Collection:
     )
 
 
+def reset_org_collection(organization_id: uuid.UUID) -> Collection:
+    """Drop and recreate the org collection to clear a corrupted vector index."""
+    client = get_chroma_client()
+    name = org_collection_name(organization_id)
+    try:
+        client.delete_collection(name)
+        logger.info("Reset Chroma collection %s", name)
+    except Exception:
+        logger.debug("Chroma collection %s did not exist or could not be deleted", name)
+    return client.get_or_create_collection(
+        name=name,
+        metadata={"organization_id": str(organization_id)},
+    )
+
+
 def _chunk_metadata(
     *,
     organization_id: uuid.UUID,
@@ -64,6 +90,123 @@ def _chunk_metadata(
     if section_name:
         metadata["section_name"] = section_name
     return metadata
+
+
+def _chroma_ids_for_document(
+    collection: Collection,
+    document_id: uuid.UUID,
+) -> list[str]:
+    try:
+        result = collection.get(
+            where={"document_id": str(document_id)},
+            include=[],
+        )
+        return list(result.get("ids") or [])
+    except Exception:
+        logger.exception("Failed to list Chroma ids for document %s", document_id)
+        return []
+
+
+def _valid_chunk_ids_for_org(db: Session, *, organization_id: uuid.UUID) -> set[str]:
+    rows = db.scalars(
+        select(Chunk.id)
+        .join(Document, Chunk.document_id == Document.id)
+        .where(Document.organization_id == organization_id)
+    ).all()
+    return {str(row) for row in rows}
+
+
+def prune_orphan_vectors(db: Session, *, organization_id: uuid.UUID) -> int:
+    """Remove Chroma vectors whose chunk ids no longer exist in Postgres."""
+    collection = get_org_collection(organization_id)
+    if collection.count() == 0:
+        return 0
+
+    try:
+        stored = collection.get(include=[])
+    except ChromaInternalError:
+        logger.warning(
+            "Chroma unreadable during orphan prune for org %s; skipping prune",
+            organization_id,
+        )
+        return 0
+
+    chroma_ids = set(stored.get("ids") or [])
+    if not chroma_ids:
+        return 0
+
+    valid_ids = _valid_chunk_ids_for_org(db, organization_id=organization_id)
+    orphan_ids = sorted(chroma_ids - valid_ids)
+    if not orphan_ids:
+        return 0
+
+    collection.delete(ids=orphan_ids)
+    logger.info(
+        "Pruned %d orphan Chroma vector(s) for org %s",
+        len(orphan_ids),
+        organization_id,
+    )
+    return len(orphan_ids)
+
+
+def rebuild_org_vector_index(db: Session, *, organization_id: uuid.UUID) -> None:
+    """Rebuild the org vector index from Postgres (source of truth)."""
+    from app.services.embedding import embed_document_chunks
+
+    reset_org_collection(organization_id)
+
+    documents = list(
+        db.scalars(
+            select(Document).where(
+                Document.organization_id == organization_id,
+                Document.status == DocumentStatus.READY,
+            )
+        ).all()
+    )
+
+    for document in documents:
+        chunks = list(
+            db.scalars(select(Chunk).where(Chunk.document_id == document.id)).all()
+        )
+        if not chunks:
+            continue
+        embed_document_chunks(
+            organization_id=organization_id,
+            document=document,
+            chunks=chunks,
+        )
+
+    prune_orphan_vectors(db, organization_id=organization_id)
+    logger.info(
+        "Rebuilt Chroma index for org %s from %d ready document(s)",
+        organization_id,
+        len(documents),
+    )
+
+
+def verify_org_vector_index(
+    db: Session,
+    *,
+    organization_id: uuid.UUID,
+    probe_embedding: list[float],
+) -> None:
+    """Probe Chroma after writes; rebuild automatically if the index is corrupt."""
+    collection = get_org_collection(organization_id)
+    if collection.count() == 0:
+        return
+
+    try:
+        collection.query(
+            query_embeddings=[probe_embedding],
+            n_results=1,
+            include=["documents"],
+        )
+    except ChromaInternalError as exc:
+        logger.warning(
+            "Chroma probe failed for org %s; rebuilding vector index",
+            organization_id,
+        )
+        rebuild_org_vector_index(db, organization_id=organization_id)
 
 
 def upsert_chunks(
@@ -103,6 +246,31 @@ def upsert_chunks(
     )
 
 
+def delete_chunks_for_document(
+    *,
+    organization_id: uuid.UUID,
+    document_id: uuid.UUID,
+    chunk_ids: list[uuid.UUID] | None = None,
+) -> None:
+    collection = get_org_collection(organization_id)
+    if collection.count() == 0:
+        return
+
+    ids_to_delete = set(_chroma_ids_for_document(collection, document_id))
+    ids_to_delete.update(str(chunk_id) for chunk_id in chunk_ids or [])
+
+    try:
+        if ids_to_delete:
+            collection.delete(ids=sorted(ids_to_delete))
+        collection.delete(where={"document_id": str(document_id)})
+    except Exception:
+        logger.exception(
+            "Failed to delete Chroma chunks for document %s in org %s",
+            document_id,
+            organization_id,
+        )
+
+
 def search(
     *,
     organization_id: uuid.UUID,
@@ -121,12 +289,17 @@ def search(
             return []
         where = {"access_level": {"$in": allowed_access_levels}}
 
-    response = collection.query(
-        query_embeddings=[query_embedding],
-        n_results=min(top_k, count),
-        where=where,
-        include=["documents", "metadatas", "distances"],
-    )
+    try:
+        response = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=min(top_k, count),
+            where=where,
+            include=["documents", "metadatas", "distances"],
+        )
+    except ChromaInternalError as exc:
+        raise VectorIndexCorruptedError(
+            "Chroma vector search failed; index must be rebuilt from Postgres"
+        ) from exc
 
     ids = response.get("ids", [[]])[0]
     documents = response.get("documents", [[]])[0]

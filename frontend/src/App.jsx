@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import AuthPage from "./components/AuthPage.jsx";
 import ChatPage from "./components/ChatPage.jsx";
+import DocumentsPage from "./components/DocumentsPage.jsx";
 import { parseJwtPayload } from "./utils/jwt.js";
 
 const TOKEN_KEY = "eka_access_token";
@@ -8,6 +9,7 @@ const EMAIL_KEY = "eka_user_email";
 
 export default function App() {
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || "");
+  const [view, setView] = useState("chat");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -42,6 +44,7 @@ export default function App() {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(EMAIL_KEY);
     setToken("");
+    setView("chat");
     setError("");
   }
 
@@ -57,12 +60,29 @@ export default function App() {
     );
   }
 
+  if (view === "documents" && session.role === "admin") {
+    return (
+      <DocumentsPage
+        token={token}
+        userRole={session.role}
+        userEmail={userEmail}
+        onBack={() => setView("chat")}
+        onLogout={handleLogout}
+        error={error}
+        setError={setError}
+        loading={loading}
+        setLoading={setLoading}
+      />
+    );
+  }
+
   return (
     <ChatPage
       token={token}
       userRole={session.role}
       userEmail={userEmail}
       onLogout={handleLogout}
+      onOpenDocuments={() => setView("documents")}
       error={error}
       setError={setError}
       loading={loading}

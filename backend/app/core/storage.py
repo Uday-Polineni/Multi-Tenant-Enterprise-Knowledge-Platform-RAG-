@@ -40,3 +40,28 @@ def read_pdf(
         document_id=document_id,
     )
     return path.read_bytes()
+
+
+def pdf_exists(
+    *,
+    organization_id: uuid.UUID,
+    document_id: uuid.UUID,
+) -> bool:
+    path = get_document_path(
+        organization_id=organization_id,
+        document_id=document_id,
+    )
+    return path.is_file()
+
+
+def delete_pdf(
+    *,
+    organization_id: uuid.UUID,
+    document_id: uuid.UUID,
+) -> None:
+    path = get_document_path(
+        organization_id=organization_id,
+        document_id=document_id,
+    )
+    if path.is_file():
+        path.unlink()

@@ -6,7 +6,7 @@
 **Local path:** `d:\Projects\Enterprise Knowledge Assistant`  
 **Architecture (frozen):** `docs/ARCHITECTURE.md`  
 **Step-by-step log (local, gitignored):** `docs/development.md`  
-**Last updated:** 2026-06-08 — **Days 1–4 complete**, Day 5 next
+**Last updated:** 2026-06-08 — **Days 1–6 complete**, Day 7 next
 
 ---
 
@@ -19,7 +19,6 @@
 - User pushes to GitHub themselves unless they ask for guidance only
 - **Never commit** `backend/.env`, API keys, or `docs/development.md`
 - Debug: use **FastAPI (backend)** launch config + `backend/.venv`; breakpoints on **executable lines** (not signature lines)
-- OpenAI dev cost so far: negligible (<$0.01 for a few embed + query calls)
 
 ---
 
@@ -30,10 +29,13 @@
 | API | FastAPI, `/api/v1` prefix |
 | DB | PostgreSQL `eka`, SQLAlchemy, Alembic |
 | Vectors | ChromaDB persistent `backend/data/chroma/` |
+| Cache / queue | **Redis** (`127.0.0.1:6379` on Windows — not `localhost`) |
+| Jobs | **ARQ worker** — async PDF embedding after upload |
 | AI | OpenAI `text-embedding-3-small` + `gpt-4o-mini` |
+| Reranker | `BAAI/bge-reranker-base` — **optional** (`RERANKER_ENABLED=false` in dev) |
 | PDF | PyMuPDF |
-| Frontend | React + Vite `localhost:5173` |
-| Planned | Redis, ARQ worker (Day 6), Nginx/EC2 (Day 7) |
+| Frontend | React + Vite — auth home + ChatGPT-style chat |
+| Next | Nginx / EC2 (Day 7) |
 
 ---
 
@@ -44,6 +46,7 @@
 - Chroma: **one collection per org** → `org_{uuid}`
 - Tenant id from JWT only — never trust client-supplied org id
 - Upsert Chroma by **`chunk_id`**; new upload = new ids (re-upload stale vectors → Day 8)
+- **`access_level`** on documents + Chroma metadata; role-filtered search (Day 4)
 
 ---
 
@@ -55,8 +58,10 @@
 | POST | `/api/v1/auth/register` | — | New org + admin, or `invite_token` join |
 | POST | `/api/v1/auth/login` | — | JWT |
 | POST | `/api/v1/auth/invite` | Bearer, **admin** | `{ "email", "role" }` → invite token |
-| POST | `/api/v1/documents/upload` | Bearer, **admin** | PDF + `access_level` form field |
-| POST | `/api/v1/query` | Bearer, any role | RAG — filtered by role's allowed levels |
+| POST | `/api/v1/documents/upload` | Bearer, **admin** | PDF + `access_level`; async → `processing` then `ready` |
+| GET | `/api/v1/documents/{id}` | Bearer, **admin** | Poll upload status (UI auto-updates green popup) |
+| POST | `/api/v1/query` | Bearer, any role | Cache? → RAG → `query_logs`; rate limit 429 |
+| GET | `/api/v1/analytics/queries` | Bearer, admin/manager | Recent query logs (latency ms, chunks) |
 
 ---
 
@@ -64,87 +69,91 @@
 
 ```
 backend/app/
-  api/auth/router.py
-  api/documents/router.py
-  api/query/router.py
-  core/config.py          # DATABASE_URL, JWT, OPENAI_API_KEY, ALLOW_PUBLIC_REGISTRATION
-  core/access.py          # role → allowed access_level map
-  core/deps.py            # get_current_user, require_admin, require_role
-  core/ai/base.py         # EmbeddingProvider, LLMProvider protocols
-  core/ai/openai_embedding.py
-  core/ai/openai_llm.py
-  core/storage.py         # PDF save/read
-  models/                 # organization, user, document, chunk
-  repositories/
+  api/auth/, documents/, query/, analytics/
+  core/access.py              # role → access_level map
+  core/redis_client.py        # Redis + graceful degrade
+  core/rate_limit.py
+  core/deps.py                # require_admin, require_role
+  core/ai/bge_reranker.py     # optional reranker
+  models/                     # org, user, document, chunk, invite, query_log
   services/
-    auth.py
-    document.py           # ingest_document()
-    embedding.py          # embed_document_chunks()
-    rag.py                # answer_question()
-    vector_store.py       # get_org_collection, upsert_chunks, search
-    pdf_extract.py, chunking.py
-  schemas/auth.py, document.py, query.py
-backend/data/uploads/     # PDFs (gitignored contents)
-backend/data/chroma/      # Chroma index (gitignored contents)
+    auth.py, document.py, document_embed.py
+    cache.py, cache_keys.py, job_queue.py
+    rag.py, rerank.py, embedding.py, vector_store.py
+  worker/tasks.py, worker/settings.py   # ARQ embed_document_task
 ```
 
 ## Key frontend paths
 
 ```
 frontend/src/
-  App.jsx                 # register, login, upload, query UI
-  api/auth.js, documents.js, query.js
+  App.jsx                     # auth vs chat routing
+  components/AuthPage.jsx     # sign in / sign up only
+  components/ChatPage.jsx     # chat + admin panel + upload status poll
+  api/auth.js, documents.js, query.js, analytics.js
+  utils/jwt.js                # role from JWT (UI only)
 ```
 
 ---
 
-## Ingestion flow (Day 2–3)
+## Ingestion flow (Day 6 async)
 
 ```
-POST upload (admin)
-  → document pending
-  → save PDF to disk
-  → processing
-  → extract (PyMuPDF) → chunk → bulk_create_chunks (Postgres)
-  → embed_document_chunks → Chroma upsert
-  → ready (or failed; on embed fail: delete PG chunks, status failed)
+POST upload (admin) + access_level
+  → save PDF → extract → chunk → Postgres (processing)
+  → if EMBED_ASYNC + Redis: enqueue ARQ job → API returns fast
+  → worker: embed → Chroma → status ready
+  → UI polls GET /documents/{id} → green "Your document is ready"
+  → fallback: sync embed in API if Redis/worker down
 ```
 
-## Query flow (Day 3)
+## Query flow (current)
 
 ```
-POST query (JWT)
-  → embed question
-  → Chroma search top_k=5 (org collection)
-  → LLM context-only prompt
-  → answer + citations (from hits, not parsed from LLM text)
+POST query (JWT + role)
+  → rate limit (Redis)
+  → answer cache hit? → return (0ms in analytics)
+  → embed question (embedding cache?)
+  → Chroma search top_k=10 + access_level filter
+  → if RERANKER_ENABLED: bge-rerank → top 5; else vector top 5
+  → LLM → answer + citations → cache answer → query_logs
 ```
 
 ---
 
 ## Env vars (`backend/.env` — not in repo)
 
-Copy from `backend/.env.example`:
+See `backend/.env.example`. Important:
 
-- `DATABASE_URL` — local Postgres `eka`
-- `JWT_SECRET`, `JWT_ALGORITHM`, `JWT_EXPIRE_MINUTES`
-- `UPLOAD_DIR=data/uploads`
-- `OPENAI_API_KEY` — **required Day 3+**
-- `CHROMA_PERSIST_DIR=data/chroma`
-- `EMBEDDING_MODEL=text-embedding-3-small`
-- `LLM_MODEL=gpt-4o-mini`
+| Var | Notes |
+|-----|-------|
+| `DATABASE_URL`, `JWT_*`, `OPENAI_API_KEY` | Required |
+| `REDIS_URL` | **`redis://127.0.0.1:6379/0`** on Windows (ARQ async fails on `localhost`) |
+| `CACHE_TTL_SECONDS` | Default 3600 |
+| `RATE_LIMIT_PER_HOUR` | Default 100 |
+| `EMBED_ASYNC` | `true` = worker; `false` = sync upload (no worker) |
+| `RAG_SEARCH_TOP_K` | **10** (was 20) |
+| `RAG_RERANK_TOP_N` | 5 |
+| `RERANKER_ENABLED` | **`false`** in dev (CPU ~17s); `true` for quality |
+| `ALLOW_PUBLIC_REGISTRATION` | Day 4 |
 
 ---
 
 ## Run locally
 
 ```powershell
+# Redis — local on 127.0.0.1:6379 OR: cd docker; docker compose up -d redis
+
 # Terminal 1 — API
 cd backend
 .\.venv\Scripts\alembic upgrade head
 .\.venv\Scripts\uvicorn app.main:app --reload
 
-# Terminal 2 — UI
+# Terminal 2 — Worker (only if EMBED_ASYNC=true)
+cd backend
+.\.venv\Scripts\arq app.worker.settings.WorkerSettings
+
+# Terminal 3 — UI
 cd frontend
 npm run dev
 ```
@@ -153,106 +162,58 @@ UI: http://localhost:5173 · Docs: http://127.0.0.1:8000/docs
 
 ---
 
-## Completed (Days 1–4)
+## Completed (Days 1–6)
 
 | Day | Deliverable |
 |-----|-------------|
-| **1** | FastAPI, Postgres models, Alembic, JWT register/login, React auth UI |
-| **2** | PDF upload, extract, chunk, Postgres; upload UI; pushed to GitHub |
-| **3** | OpenAI embed, Chroma, ingest hook, RAG service, query API, query UI; manual test OK |
-| **4** | `access_level`, role-filtered Chroma search, invites, RBAC deps, UI; smoke test OK |
+| **1** | FastAPI, Postgres, Alembic, JWT, React auth |
+| **2** | PDF upload, extract, chunk, Postgres |
+| **3** | OpenAI embed, Chroma, RAG + citations, query UI |
+| **4** | RBAC, `access_level`, invites; role-filtered search; chat UI redesign |
+| **5** | Reranker (optional), `query_logs`, analytics API + Recent queries UI |
+| **6** | Redis cache, rate limit, ARQ async embed, upload ready polling, Redis fallback |
 
-**Day 4 Step 31:** Manual UI test (two users, two access levels) — user runs locally.
-
----
-
-## Day 8 — Misc backlog (do NOT block Days 4–7)
-
-1. **Document re-upload** — new `document_id` leaves old Chroma vectors; need delete/replace
-2. **Citation dedupe** — by `(document, page, section)` not only `chunk_id`
-3. **Cap citations** — e.g. top 3 unique sources
-4. **LLM markdown** — `**bold**` in plain UI; plain-text prompt or react-markdown
-5. **Chunk section names** — resume heading detection
-6. **Bullet normalization** in `text_clean.py`
-7. Hide upload until logged in; Docker API; DB health on `/health`; cache invalidation on delete
+**Manual testing done:** cache hit ~0ms; upload processing→ready popup; analytics latency panel; reranker off for speed.
 
 ---
 
-## Remaining plan — Days 4–7 (step outlines)
+## UX (business-facing)
 
-### Day 4 — RBAC, `access_level`, invites
-
-**Objectives:** Enforce roles; document access enum; invite users to existing org.
-
-| Step area | Tasks |
-|-----------|--------|
-| Model | `documents.access_level` enum; migration; `invites` table |
-| Config | Role → allowed `access_level` map |
-| Upload | Admin sets `access_level` on upload |
-| Chroma | Store `access_level` in chunk metadata; filter on search |
-| Auth | `POST /auth/invite` (admin); register-with-invite token |
-| RBAC | Manager/employee query only; admin upload/delete |
-| Env | `ALLOW_PUBLIC_REGISTRATION` |
-| Test | Two users, different roles, filtered retrieval |
-| Docs | README + development.md |
-
-### Day 5 — Reranker + query logging
-
-**Objectives:** top 20 → rerank → top 5; persist queries.
-
-| Step area | Tasks |
-|-----------|--------|
-| Model | `query_logs` table + migration |
-| Reranker | `RerankerProvider` + local `bge-reranker-base` |
-| RAG | Search top_k=20 → rerank → top_n=5 → LLM |
-| API | Optional analytics endpoint (manager) |
-| Test | Better relevance vs raw vector top 5 |
-| Docs | Wrap-up |
-
-### Day 6 — Redis cache, rate limit, async embeddings
-
-**Objectives:** Cache answers/embeddings; rate limit; ARQ worker for embed jobs.
-
-| Step area | Tasks |
-|-----------|--------|
-| Infra | Redis in docker-compose; config |
-| Cache | Hash question + org; TTL for answers/embeddings |
-| Rate limit | Per user/org hourly cap |
-| ARQ | Worker service; async embed after upload (optional sync fallback) |
-| Upload | Return faster; status `processing` until embed done |
-| Test | Cache hit; rate limit 429 |
-| Docs | Wrap-up |
-
-### Day  7 — Deploy + demo
-
-**Objectives:** EC2, Nginx, HTTPS, demo data, final README/diagram.
-
-| Step area | Tasks |
-|-----------|--------|
-| Docker | Full compose: api, worker, postgres, chroma, redis, nginx |
-| Deploy | EC2 setup, env secrets, volumes |
-| Nginx | Reverse proxy, TLS |
-| Demo | Seed org, sample PDFs, demo script |
-| Docs | Architecture diagram, production README |
+- **Home:** sign in / sign up only (no token shown)
+- **Chat:** ChatGPT-style Q&A for all roles
+- **Admin only:** invite + upload; managers see Analytics (query logs)
+- **Upload:** green status — "preparing…" → auto-updates to "ready"
+- **Analytics:** question + latency ms + chunks (manager/admin)
 
 ---
 
-## Roles (architecture — partial today)
+## Known issues → Day 8 backlog
 
-| Role | Target (Day 4) | Today |
-|------|----------------|-------|
-| Admin | Upload, delete, invites, users | Upload + invite enforced; all access levels |
-| Manager | Query, analytics | Query; public/hr/engineering/finance |
-| Employee | Query only | Query; public only |
+1. Document re-upload / stale Chroma vectors  
+2. Citation dedupe, cap citations, LLM markdown in UI  
+3. Chunk section names, bullet normalization  
+4. Infra polish: cache invalidation on delete, `/health` + DB  
+5. **First-query latency** (~10–17s uncached) — tune before company rollout  
+6. **Search paraphrases** — "portfolio policy" vs "prompt guide"; query rewrite / hybrid search  
 
 ---
 
 ## Debugging notes learned
 
-- `flush()` ≠ `commit()` — pgAdmin won't see rows until commit at end of `ingest_document()`
-- Chroma `upsert` updates same `chunk_id` only; new upload = new ids
-- Register fresh org for clean Chroma when testing RAG
-- PowerShell: use `;` not `&&` between commands
+- `flush()` ≠ `commit()` — pgAdmin needs commit at end of ingest  
+- Chroma `upsert` same `chunk_id` only; new upload = new ids  
+- **Windows Redis:** use `127.0.0.1` not `localhost` for ARQ worker  
+- **Reranker:** ~5–10s CPU per query; disable with `RERANKER_ENABLED=false`  
+- **Redis down:** API degrades — no cache/rate limit; sync embed fallback  
+- **ARQ ≠ Kafka:** job queue for embed jobs; Kafka overkill for MVP  
+- PowerShell: use `;` not `&&`  
+- Run `arq` from **`backend/`** folder  
+
+---
+
+## Day 7 — next
+
+EC2, Docker full compose (api, worker, postgres, redis, nginx), HTTPS, demo data, architecture diagram, production README.
 
 ---
 
@@ -263,13 +224,13 @@ Continue the Enterprise Knowledge Assistant project.
 
 Read docs/context.md and docs/ARCHITECTURE.md first.
 
-Status: Days 1–3 complete. Day 4 next (RBAC, access_level, invites).
+Status: Days 1–6 complete. Day 7 next (deploy + demo).
 
-Work step-by-step like before: say "Day 4 Step 1" when I want to implement.
+Work step-by-step: say "Day 7 Step 1" when I want to implement.
 Update docs/development.md after each step (local, gitignored).
 Do not commit secrets. User pushes to GitHub themselves.
 
-Start by giving me Day 4 objectives and a step breakdown (like Days 1–3), then wait for "Day 4 Step 1".
+Start by giving me Day 7 objectives and a step breakdown, then wait for "Day 7 Step 1".
 ```
 
-Optional: attach or `@` reference `docs/context.md` in the new chat so the agent reads the full file.
+Optional: attach or `@` reference `docs/context.md` in the new chat.

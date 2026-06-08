@@ -9,9 +9,11 @@ class QueryRequest(BaseModel):
 
 class Citation(BaseModel):
     document: str
+    document_id: uuid.UUID
     page: int | None = None
     section: str | None = None
     chunk_id: uuid.UUID
+    source_index: int | None = None
 
 
 class QueryResponse(BaseModel):

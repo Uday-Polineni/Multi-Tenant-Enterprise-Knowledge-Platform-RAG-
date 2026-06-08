@@ -9,6 +9,14 @@ class PageText:
     text: str
 
 
+def count_pdf_pages(data: bytes) -> int:
+    doc = fitz.open(stream=data, filetype="pdf")
+    try:
+        return doc.page_count
+    finally:
+        doc.close()
+
+
 def extract_text_from_pdf(data: bytes) -> list[PageText]:
     doc = fitz.open(stream=data, filetype="pdf")
     pages: list[PageText] = []

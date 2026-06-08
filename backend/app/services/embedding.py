@@ -15,9 +15,9 @@ def embed_document_chunks(
     organization_id: uuid.UUID,
     document: Document,
     chunks: list[Chunk],
-) -> None:
+) -> list[list[float]]:
     if not chunks:
-        return
+        return []
 
     try:
         embeddings = get_embedding_provider().embed_batch(
@@ -30,5 +30,6 @@ def embed_document_chunks(
             chunks=chunks,
             embeddings=embeddings,
         )
+        return embeddings
     except Exception as exc:
         raise EmbeddingError("Failed to embed document chunks") from exc

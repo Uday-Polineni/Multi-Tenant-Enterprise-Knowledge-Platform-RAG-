@@ -1,7 +1,18 @@
 import { useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import rehypeSanitize from "rehype-sanitize";
+import { listRecentQueries } from "../api/analytics.js";
 import { inviteUser } from "../api/auth.js";
-import { uploadDocument } from "../api/documents.js";
-import { askQuestion } from "../api/query.js";
+import { getDocumentStatus, openDocumentPdf, uploadDocument } from "../api/documents.js";
+import { askQuestionStream } from "../api/query.js";
+import {
+  buildSourceMap,
+  citationLinkLabel,
+  citationLinkTitle,
+  firstSourceIndex,
+  splitAnswerParagraphs,
+  stripSourceRefs,
+} from "../utils/citations.js";
 
 const ACCESS_LEVELS = [
   { value: "public", label: "Public" },
@@ -17,27 +28,84 @@ const INVITE_ROLES = [
   { value: "admin", label: "Admin" },
 ];
 
-function ChatMessage({ message }) {
+function AssistantAnswer({ content, citations, accessToken, onCitationError }) {
+  const sourceMap = buildSourceMap(citations);
+  const paragraphs = splitAnswerParagraphs(content);
+
+  async function handleCitationClick(citation) {
+    if (!citation?.document_id || !accessToken) return;
+    try {
+      await openDocumentPdf({
+        documentId: citation.document_id,
+        page: citation.page,
+        accessToken,
+      });
+    } catch (err) {
+      onCitationError?.(err.message);
+    }
+  }
+
+  if (paragraphs.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="chat-content chat-markdown chat-answer-paragraphs">
+      {paragraphs.map((paragraph, index) => {
+        const sourceIndex = firstSourceIndex(paragraph);
+        const citation = sourceIndex != null ? sourceMap.get(sourceIndex) : null;
+        const cleanText = stripSourceRefs(paragraph);
+
+        return (
+          <p key={index} className="answer-paragraph">
+            <span className="answer-paragraph-text">
+              <ReactMarkdown
+                rehypePlugins={[rehypeSanitize]}
+                components={{
+                  p: ({ children }) => <span>{children}</span>,
+                }}
+              >
+                {cleanText}
+              </ReactMarkdown>
+            </span>
+            {citation && (
+              <>
+                {" "}
+                <button
+                  type="button"
+                  className="citation-inline"
+                  onClick={() => handleCitationClick(citation)}
+                  title={citationLinkTitle(citation)}
+                >
+                  {citationLinkLabel(citation)}
+                </button>
+              </>
+            )}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
+function ChatMessage({ message, accessToken, onCitationError }) {
   const isUser = message.role === "user";
 
   return (
     <div className={`chat-message ${isUser ? "user" : "assistant"}`}>
       <div className="chat-message-inner">
         <span className="chat-role">{isUser ? "You" : "Assistant"}</span>
-        <p className="chat-content">{message.content}</p>
-        {!isUser && message.citations?.length > 0 && (
-          <div className="chat-citations">
-            <span className="chat-citations-label">Sources</span>
-            <ul>
-              {message.citations.map((c) => (
-                <li key={c.chunk_id}>
-                  {c.document}
-                  {c.page != null && ` · p.${c.page}`}
-                  {c.section && ` · ${c.section}`}
-                </li>
-              ))}
-            </ul>
-          </div>
+        {isUser ? (
+          <p className="chat-content">{message.content}</p>
+        ) : message.streaming && !message.content ? (
+          <p className="chat-content typing">Generating answer…</p>
+        ) : (
+          <AssistantAnswer
+            content={message.content}
+            citations={message.citations}
+            accessToken={accessToken}
+            onCitationError={onCitationError}
+          />
         )}
       </div>
     </div>
@@ -49,6 +117,7 @@ export default function ChatPage({
   userRole,
   userEmail,
   onLogout,
+  onOpenDocuments,
   error,
   setError,
   loading,
@@ -62,14 +131,54 @@ export default function ChatPage({
   const [uploadFile, setUploadFile] = useState(null);
   const [uploadAccessLevel, setUploadAccessLevel] = useState("public");
   const [uploadSuccess, setUploadSuccess] = useState(null);
+  const [queryLogs, setQueryLogs] = useState([]);
   const messagesEndRef = useRef(null);
   const textareaRef = useRef(null);
 
   const isAdmin = userRole === "admin";
+  const canViewAnalytics = userRole === "admin" || userRole === "manager";
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
+
+  useEffect(() => {
+    if (!adminOpen || !canViewAnalytics) return;
+    listRecentQueries({ accessToken: token, limit: 10 })
+      .then((data) => setQueryLogs(data.items ?? []))
+      .catch(() => setQueryLogs([]));
+  }, [adminOpen, canViewAnalytics, token, messages.length]);
+
+  useEffect(() => {
+    if (!uploadSuccess?.id || uploadSuccess.status !== "processing") return;
+
+    const documentId = uploadSuccess.id;
+    const intervalId = setInterval(async () => {
+      try {
+        const doc = await getDocumentStatus({ documentId, accessToken: token });
+        if (doc.status !== "processing") {
+          setUploadSuccess(doc);
+        }
+      } catch {
+        // ignore transient poll errors
+      }
+    }, 2000);
+
+    return () => clearInterval(intervalId);
+  }, [uploadSuccess?.id, uploadSuccess?.status, token]);
+
+  function uploadStatusMessage(doc) {
+    if (doc.status === "processing") {
+      return "We're preparing your document for search…";
+    }
+    if (doc.status === "ready") {
+      return "Your document is ready — you can ask questions about it now.";
+    }
+    if (doc.status === "failed") {
+      return "We couldn't prepare this document. Please try uploading again.";
+    }
+    return doc.status;
+  }
 
   function handleInputKeyDown(e) {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -88,28 +197,61 @@ export default function ChatPage({
     const userMessage = { id: crypto.randomUUID(), role: "user", content: question };
     setMessages((prev) => [...prev, userMessage]);
     setLoading(true);
+    const assistantId = crypto.randomUUID();
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: assistantId,
+        role: "assistant",
+        content: "",
+        citations: [],
+        streaming: true,
+      },
+    ]);
 
     try {
-      const data = await askQuestion({ question, accessToken: token });
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content: data.answer,
-          citations: data.citations ?? [],
+      await askQuestionStream({
+        question,
+        accessToken: token,
+        onCitations: () => {
+          // Citations arrive in onDone with source_index for inline links
         },
-      ]);
+        onToken: (text) => {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId ? { ...m, content: m.content + text } : m
+            )
+          );
+        },
+        onDone: (payload) => {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId
+                ? {
+                    ...m,
+                    content: payload.answer ?? m.content,
+                    citations: payload.citations ?? m.citations,
+                    streaming: false,
+                  }
+                : m
+            )
+          );
+        },
+      });
     } catch (err) {
-      setError(err.message);
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content: "Sorry, something went wrong. Please try again.",
-        },
-      ]);
+      const errorMessage = err.message || "Something went wrong. Please try again.";
+      setError(errorMessage);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantId
+            ? {
+                ...m,
+                content: errorMessage,
+                streaming: false,
+              }
+            : m
+        )
+      );
     } finally {
       setLoading(false);
       textareaRef.current?.focus();
@@ -181,13 +323,13 @@ export default function ChatPage({
           )}
         </div>
         <div className="chat-header-actions">
-          {isAdmin && (
+          {(isAdmin || canViewAnalytics) && (
             <button
               type="button"
               className="secondary header-btn"
               onClick={() => setAdminOpen((open) => !open)}
             >
-              {adminOpen ? "Close admin" : "Admin"}
+              {adminOpen ? "Close" : isAdmin ? "Admin" : "Analytics"}
             </button>
           )}
           <button type="button" className="secondary header-btn" onClick={onLogout}>
@@ -198,10 +340,25 @@ export default function ChatPage({
 
       {error && <div className="alert error chat-banner">{error}</div>}
 
-      {isAdmin && adminOpen && (
+      {(isAdmin || canViewAnalytics) && adminOpen && (
         <aside className="admin-panel card">
-          <h2>Admin</h2>
+          <div className="admin-panel-head">
+            <h2>{isAdmin ? "Admin" : "Analytics"}</h2>
+            {isAdmin && (
+              <button
+                type="button"
+                className="secondary header-btn"
+                onClick={() => {
+                  setAdminOpen(false);
+                  onOpenDocuments?.();
+                }}
+              >
+                Documents
+              </button>
+            )}
+          </div>
           <div className="admin-grid">
+            {isAdmin && (
             <section className="admin-section">
               <h3>Invite user</h3>
               <p className="hint">Share the invite code with the new team member.</p>
@@ -246,10 +403,15 @@ export default function ChatPage({
                 </div>
               )}
             </section>
+            )}
 
+            {isAdmin && (
             <section className="admin-section">
               <h3>Upload PDF</h3>
-              <p className="hint">Documents are indexed for search by access level.</p>
+              <p className="hint">
+                Prototype limits: up to 15 pages per PDF and 15 documents per organization.
+                Documents are indexed for search by access level.
+              </p>
               <form onSubmit={handleUpload}>
                 <label>
                   Access level
@@ -278,12 +440,48 @@ export default function ChatPage({
                 </button>
               </form>
               {uploadSuccess && (
-                <div className="alert success admin-feedback">
-                  <strong>{uploadSuccess.filename}</strong> indexed ({uploadSuccess.chunk_count}{" "}
-                  chunks, {uploadSuccess.access_level})
+                <div
+                  className={
+                    uploadSuccess.status === "failed"
+                      ? "alert error admin-feedback"
+                      : `alert success admin-feedback${
+                          uploadSuccess.status === "processing" ? " upload-status-processing" : ""
+                        }`
+                  }
+                >
+                  <strong>{uploadSuccess.filename}</strong>
+                  <p className="upload-status-text">{uploadStatusMessage(uploadSuccess)}</p>
+                  {uploadSuccess.status === "ready" && (
+                    <p className="upload-status-meta">
+                      {uploadSuccess.chunk_count} section(s) indexed · {uploadSuccess.access_level}{" "}
+                      access
+                    </p>
+                  )}
                 </div>
               )}
             </section>
+            )}
+
+            {canViewAnalytics && (
+              <section className="admin-section admin-section-wide">
+                <h3>Recent queries</h3>
+                <p className="hint">Logged after each question (latency + chunks used).</p>
+                {queryLogs.length === 0 ? (
+                  <p className="hint">No queries logged yet.</p>
+                ) : (
+                  <ul className="query-log-list">
+                    {queryLogs.map((log) => (
+                      <li key={log.id}>
+                        <strong>{log.question}</strong>
+                        <span className="query-log-meta">
+                          {log.latency_ms} ms · {log.retrieved_chunk_ids?.length ?? 0} chunks
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+            )}
           </div>
         </aside>
       )}
@@ -297,16 +495,13 @@ export default function ChatPage({
             </div>
           )}
           {messages.map((msg) => (
-            <ChatMessage key={msg.id} message={msg} />
+            <ChatMessage
+              key={msg.id}
+              message={msg}
+              accessToken={token}
+              onCitationError={setError}
+            />
           ))}
-          {loading && messages.length > 0 && messages[messages.length - 1].role === "user" && (
-            <div className="chat-message assistant">
-              <div className="chat-message-inner">
-                <span className="chat-role">Assistant</span>
-                <p className="chat-content typing">Thinking…</p>
-              </div>
-            </div>
-          )}
           <div ref={messagesEndRef} />
         </div>
 

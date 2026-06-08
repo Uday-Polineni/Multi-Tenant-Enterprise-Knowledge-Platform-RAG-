@@ -1,10 +1,8 @@
 from dataclasses import dataclass
 
+from app.core.config import get_settings
 from app.services.pdf_extract import PageText
 from app.utils.text_clean import clean_text
-
-MAX_CHUNK_CHARS = 2000
-OVERLAP_CHARS = 150
 
 
 @dataclass
@@ -13,6 +11,11 @@ class TextChunk:
     page_number: int | None
     section_name: str | None
     content: str
+
+
+def _chunk_limits() -> tuple[int, int]:
+    settings = get_settings()
+    return settings.ingest_chunk_max_chars, settings.ingest_chunk_overlap_chars
 
 
 def _looks_like_heading(text: str) -> bool:
@@ -40,6 +43,7 @@ def _hard_split(text: str, max_chars: int, overlap: int) -> list[str]:
 
 
 def chunk_pages(pages: list[PageText]) -> list[TextChunk]:
+    max_chars, overlap_chars = _chunk_limits()
     chunks: list[TextChunk] = []
     chunk_index = 0
 
@@ -57,7 +61,7 @@ def chunk_pages(pages: list[PageText]) -> list[TextChunk]:
 
             combined = f"{buffer}\n\n{paragraph}".strip() if buffer else paragraph
 
-            if len(combined) <= MAX_CHUNK_CHARS:
+            if len(combined) <= max_chars:
                 buffer = combined
                 continue
 
@@ -71,10 +75,10 @@ def chunk_pages(pages: list[PageText]) -> list[TextChunk]:
                     )
                 )
                 chunk_index += 1
-                overlap = buffer[-OVERLAP_CHARS:] if len(buffer) > OVERLAP_CHARS else buffer
+                overlap = buffer[-overlap_chars:] if len(buffer) > overlap_chars else buffer
                 buffer = f"{overlap}\n\n{paragraph}".strip()
-                if len(buffer) > MAX_CHUNK_CHARS:
-                    for piece in _hard_split(buffer, MAX_CHUNK_CHARS, OVERLAP_CHARS):
+                if len(buffer) > max_chars:
+                    for piece in _hard_split(buffer, max_chars, overlap_chars):
                         chunks.append(
                             TextChunk(
                                 chunk_index=chunk_index,
@@ -86,7 +90,7 @@ def chunk_pages(pages: list[PageText]) -> list[TextChunk]:
                         chunk_index += 1
                     buffer = ""
             else:
-                for piece in _hard_split(paragraph, MAX_CHUNK_CHARS, OVERLAP_CHARS):
+                for piece in _hard_split(paragraph, max_chars, overlap_chars):
                     chunks.append(
                         TextChunk(
                             chunk_index=chunk_index,

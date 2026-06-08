@@ -5,6 +5,8 @@ __pycache__/
 venv/
 *.egg-info/
 .pytest_cache/
+backend/tests/regression/_corpus_pdfs/
+backend/tests/regression/_corpus_large_pdfs/
 .mypy_cache/
 .ruff_cache/
 

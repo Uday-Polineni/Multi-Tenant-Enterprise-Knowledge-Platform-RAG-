@@ -14,3 +14,10 @@ python-multipart>=0.0.12
 # Day 3 — embeddings + vector store
 openai>=1.58.0
 chromadb>=0.5.23
+
+# Day 5 — local reranker (pulls torch on install)
+sentence-transformers>=3.3.0
+
+# Day 6 — Redis cache, rate limit, ARQ worker
+redis>=5.2.0
+arq>=0.26.0
