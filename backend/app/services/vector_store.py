@@ -48,6 +48,7 @@ def _chunk_metadata(
     document_id: uuid.UUID,
     chunk_id: uuid.UUID,
     filename: str,
+    access_level: str,
     page_number: int | None,
     section_name: str | None,
 ) -> dict[str, str | int]:
@@ -56,6 +57,7 @@ def _chunk_metadata(
         "document_id": str(document_id),
         "chunk_id": str(chunk_id),
         "filename": filename,
+        "access_level": access_level,
     }
     if page_number is not None:
         metadata["page_number"] = page_number
@@ -68,6 +70,7 @@ def upsert_chunks(
     *,
     organization_id: uuid.UUID,
     filename: str,
+    access_level: str,
     chunks: list[Chunk],
     embeddings: list[list[float]],
 ) -> None:
@@ -85,6 +88,7 @@ def upsert_chunks(
             document_id=chunk.document_id,
             chunk_id=chunk.id,
             filename=filename,
+            access_level=access_level,
             page_number=chunk.page_number,
             section_name=chunk.section_name,
         )
@@ -104,15 +108,23 @@ def search(
     organization_id: uuid.UUID,
     query_embedding: list[float],
     top_k: int = 5,
+    allowed_access_levels: list[str] | None = None,
 ) -> list[ChunkSearchResult]:
     collection = get_org_collection(organization_id)
     count = collection.count()
     if count == 0:
         return []
 
+    where: dict | None = None
+    if allowed_access_levels is not None:
+        if not allowed_access_levels:
+            return []
+        where = {"access_level": {"$in": allowed_access_levels}}
+
     response = collection.query(
         query_embeddings=[query_embedding],
         n_results=min(top_k, count),
+        where=where,
         include=["documents", "metadatas", "distances"],
     )
 

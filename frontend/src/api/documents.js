@@ -13,9 +13,10 @@ async function parseError(response) {
   }
 }
 
-export async function uploadDocument({ file, accessToken }) {
+export async function uploadDocument({ file, accessToken, accessLevel = "public" }) {
   const formData = new FormData();
   formData.append("file", file);
+  formData.append("access_level", accessLevel);
 
   const response = await fetch(`${API_BASE}/api/v1/documents/upload`, {
     method: "POST",

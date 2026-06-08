@@ -1,5 +1,6 @@
 import uuid
 
+from app.core.access import allowed_levels_for_role
 from app.core.ai.openai_embedding import get_embedding_provider
 from app.core.ai.openai_llm import get_llm_provider
 from app.schemas.query import Citation, QueryResponse
@@ -25,12 +26,15 @@ def answer_question(
     *,
     organization_id: uuid.UUID,
     question: str,
+    role: str,
 ) -> QueryResponse:
+    allowed_levels = allowed_levels_for_role(role)
     query_embedding = get_embedding_provider().embed(question)
     hits = search(
         organization_id=organization_id,
         query_embedding=query_embedding,
         top_k=RAG_TOP_K,
+        allowed_access_levels=allowed_levels,
     )
 
     if not hits:

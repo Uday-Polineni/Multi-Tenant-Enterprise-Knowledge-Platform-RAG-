@@ -16,6 +16,7 @@ async def query_knowledge(
         return answer_question(
             organization_id=current_user.organization_id,
             question=body.question,
+            role=current_user.role,
         )
     except Exception as exc:
         raise HTTPException(

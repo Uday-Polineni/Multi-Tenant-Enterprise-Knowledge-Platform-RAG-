@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embedding-3-small"
     llm_model: str = "gpt-4o-mini"
 
+    # Day 4 — registration + invites
+    allow_public_registration: bool = True
+    invite_expire_days: int = 7
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -15,6 +15,14 @@ class DocumentStatus(str, enum.Enum):
     FAILED = "failed"
 
 
+class DocumentAccessLevel(str, enum.Enum):
+    PUBLIC = "public"
+    HR = "hr"
+    ENGINEERING = "engineering"
+    FINANCE = "finance"
+    ADMIN_ONLY = "admin_only"
+
+
 class Document(Base):
     __tablename__ = "documents"
 
@@ -34,6 +42,11 @@ class Document(Base):
         Enum(DocumentStatus, name="document_status", native_enum=False, length=20),
         nullable=False,
         default=DocumentStatus.PENDING,
+    )
+    access_level: Mapped[DocumentAccessLevel] = mapped_column(
+        Enum(DocumentAccessLevel, name="document_access_level", native_enum=False, length=20),
+        nullable=False,
+        default=DocumentAccessLevel.PUBLIC,
     )
     uploaded_by: Mapped[uuid.UUID] = mapped_column(
         Uuid,

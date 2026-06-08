@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.core.storage import save_pdf
 from app.models.chunk import Chunk
-from app.models.document import Document, DocumentStatus
+from app.models.document import Document, DocumentAccessLevel, DocumentStatus
 from app.repositories.chunk import bulk_create_chunks
 from app.repositories.document import (
     create_document,
@@ -23,6 +23,7 @@ def ingest_document(
     uploaded_by: uuid.UUID,
     filename: str,
     pdf_data: bytes,
+    access_level: DocumentAccessLevel = DocumentAccessLevel.PUBLIC,
 ) -> Document:
     document = create_document(
         db,
@@ -30,6 +31,7 @@ def ingest_document(
         filename=filename,
         uploaded_by=uploaded_by,
         status=DocumentStatus.PENDING,
+        access_level=access_level,
     )
     db.flush()
 

@@ -13,15 +13,31 @@ async function parseError(response) {
   }
 }
 
-export async function register({ email, password, organizationName }) {
+export async function register({ email, password, organizationName, inviteToken }) {
+  const body = { email, password };
+  if (inviteToken) {
+    body.invite_token = inviteToken;
+  } else {
+    body.organization_name = organizationName;
+  }
+
   const response = await fetch(`${API_BASE}/api/v1/auth/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      email,
-      password,
-      organization_name: organizationName,
-    }),
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error(await parseError(response));
+  return response.json();
+}
+
+export async function inviteUser({ email, role, accessToken }) {
+  const response = await fetch(`${API_BASE}/api/v1/auth/invite`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({ email, role }),
   });
   if (!response.ok) throw new Error(await parseError(response));
   return response.json();

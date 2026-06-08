@@ -26,6 +26,7 @@ def embed_document_chunks(
         upsert_chunks(
             organization_id=organization_id,
             filename=document.filename,
+            access_level=document.access_level.value,
             chunks=chunks,
             embeddings=embeddings,
         )

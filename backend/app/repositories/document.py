@@ -3,7 +3,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.document import Document, DocumentStatus
+from app.models.document import Document, DocumentAccessLevel, DocumentStatus
 
 
 def create_document(
@@ -13,12 +13,14 @@ def create_document(
     filename: str,
     uploaded_by: uuid.UUID,
     status: DocumentStatus = DocumentStatus.PENDING,
+    access_level: DocumentAccessLevel = DocumentAccessLevel.PUBLIC,
 ) -> Document:
     document = Document(
         organization_id=organization_id,
         filename=filename,
         uploaded_by=uploaded_by,
         status=status,
+        access_level=access_level,
     )
     db.add(document)
     db.flush()

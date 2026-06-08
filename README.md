@@ -6,17 +6,17 @@ Built with FastAPI, PostgreSQL, ChromaDB, Redis, and OpenAI.
 
 ## Features
 
-**Implemented (Day 1–3)**
+**Implemented (Day 1–4)**
 
 - Multi-tenant organizations with JWT auth (register + login)
+- Admin invites — join existing org with `employee` / `manager` / `admin` role
+- Document `access_level` enum — role-based retrieval filters in Chroma
 - Admin-only PDF upload with PyMuPDF text extraction and chunking (PostgreSQL)
 - OpenAI embeddings + ChromaDB vector index (one collection per organization)
 - RAG query API with context-only answers and citations
-- React UI — register, login, upload PDF, ask questions
+- React UI — register, invite, upload with access level, query
 
 **Planned**
-
-- RBAC enforcement, `access_level` filters, invites (Day 4)
 - Reranker + query logging (Day 5)
 - Redis cache, rate limits, async embedding jobs (Day 6)
 - Production deploy (Day 7)
@@ -60,10 +60,11 @@ Open http://localhost:5173 — register, upload a PDF (admin), then ask a questi
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/health` | — | Liveness check |
-| POST | `/api/v1/auth/register` | — | Create org + admin user |
+| POST | `/api/v1/auth/register` | — | Create org + admin, or join via `invite_token` |
 | POST | `/api/v1/auth/login` | — | Issue JWT |
-| POST | `/api/v1/documents/upload` | Bearer (admin) | Upload PDF → extract → chunk → embed → Chroma |
-| POST | `/api/v1/query` | Bearer | RAG question → answer + citations |
+| POST | `/api/v1/auth/invite` | Bearer (admin) | Create invite token for email + role |
+| POST | `/api/v1/documents/upload` | Bearer (admin) | Upload PDF + `access_level` → ingest → Chroma |
+| POST | `/api/v1/query` | Bearer | RAG question → answer + citations (role-filtered) |
 
 Upload stores PDFs at `backend/data/uploads/{organization_id}/{document_id}.pdf`.  
 Vectors persist at `backend/data/chroma/` (local dev).
@@ -90,7 +91,9 @@ Client  →  FastAPI  →  Services  →  PostgreSQL (metadata, users, chunks)
 
 **Multi-tenant:** every row scoped by `organization_id`; JWT carries `user_id`, `organization_id`, `role`.
 
-**RAG flow (Day 3):** upload PDF → chunk in Postgres → embed → Chroma → query → retrieve → LLM → answer + citations.
+**RAG flow:** upload PDF (+ `access_level`) → chunk in Postgres → embed → Chroma → query (filtered by role) → retrieve → LLM → answer + citations.
+
+**Roles (Day 4):** Admin — all access levels + upload/invite. Manager — `public`, `hr`, `engineering`, `finance`. Employee — `public` only.
 
 Full decisions: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
@@ -105,12 +108,13 @@ Full decisions: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 ```
 backend/
   app/
-    api/auth/         # register, login
+    api/auth/         # register, login, invite
+    core/access.py    # role → access_level map
     api/documents/    # PDF upload
     api/query/        # RAG query
     core/ai/          # OpenAI embedding + LLM providers
     core/             # config, database, deps, security, storage
-    models/           # organizations, users, documents, chunks
+    models/           # organizations, users, documents, chunks, invites
     repositories/     # DB access layer
     schemas/          # Pydantic request/response models
     services/         # auth, ingest, embedding, rag, vector_store, chunking
@@ -130,7 +134,8 @@ docs/                 # Architecture notes
 | **Day 1** | JWT auth — register + login; React UI |
 | **Day 2** | PDF upload pipeline — extract, chunk, Postgres; upload UI |
 | **Day 3** | Embeddings, Chroma, RAG query API + citations; query UI |
+| **Day 4** | RBAC, `access_level`, invites, role-filtered retrieval; UI updates |
 
-**Next (Day 4):** RBAC, `access_level`, invites, retrieval filters.
+**Next (Day 5):** Reranker + query logging.
 
 Optional polish: Day 8 misc (citation dedupe, document replace, markdown UI).
