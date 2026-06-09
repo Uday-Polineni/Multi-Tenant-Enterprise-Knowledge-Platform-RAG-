@@ -5,18 +5,30 @@ from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.core.access import can_access_level
+from app.core.access import allowed_levels_for_role, can_access_level
 from app.core.database import get_db
 from app.core.deps import CurrentUser, get_current_user, require_admin
 from app.core.storage import get_document_path, pdf_exists
 from app.models.chunk import Chunk
 from app.models.document import Document, DocumentAccessLevel, DocumentStatus
-from app.repositories.document import get_document_by_id, list_documents_for_org
-from app.schemas.document import DocumentListResponse, DocumentUploadResponse
+from app.repositories.document import (
+    get_document_by_id,
+    list_documents_for_org,
+    list_queryable_documents_for_role,
+)
+from app.schemas.document import (
+    DocumentAccessLevelUpdate,
+    DocumentListResponse,
+    DocumentUploadResponse,
+)
 from app.services.document import ingest_document, should_embed_async
 from app.services.document_limits import PrototypeLimitError, validate_upload_limits
 from app.services.document_embed import run_document_embedding
-from app.services.document_lifecycle import DocumentNotFoundError, remove_document
+from app.services.document_lifecycle import (
+    DocumentNotFoundError,
+    remove_document,
+    update_document_access_level,
+)
 from app.services.job_queue import enqueue_embed_document
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -40,12 +52,19 @@ def _document_response(db: Session, document: Document) -> DocumentUploadRespons
 @router.get("", response_model=DocumentListResponse)
 def list_documents(
     db: Session = Depends(get_db),
-    current_user: CurrentUser = Depends(require_admin),
+    current_user: CurrentUser = Depends(get_current_user),
 ) -> DocumentListResponse:
-    documents = list_documents_for_org(
-        db,
-        organization_id=current_user.organization_id,
-    )
+    if current_user.role == "admin":
+        documents = list_documents_for_org(
+            db,
+            organization_id=current_user.organization_id,
+        )
+    else:
+        documents = list_queryable_documents_for_role(
+            db,
+            organization_id=current_user.organization_id,
+            allowed_access_levels=allowed_levels_for_role(current_user.role),
+        )
     return DocumentListResponse(
         items=[_document_response(db, document) for document in documents]
     )
@@ -167,6 +186,31 @@ def download_document_file(
         filename=document.filename,
         content_disposition_type="inline",
     )
+
+
+@router.patch("/{document_id}", response_model=DocumentUploadResponse)
+def patch_document_access_level(
+    document_id: uuid.UUID,
+    body: DocumentAccessLevelUpdate,
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(require_admin),
+) -> DocumentUploadResponse:
+    try:
+        document = update_document_access_level(
+            db,
+            organization_id=current_user.organization_id,
+            document_id=document_id,
+            access_level=body.access_level,
+        )
+        db.commit()
+        db.refresh(document)
+    except DocumentNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found",
+        ) from exc
+
+    return _document_response(db, document)
 
 
 @router.get("/{document_id}", response_model=DocumentUploadResponse)

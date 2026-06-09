@@ -1,10 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
-import { listRecentQueries } from "../api/analytics.js";
-import { inviteUser } from "../api/auth.js";
-import { getDocumentStatus, openDocumentPdf, uploadDocument } from "../api/documents.js";
+import { openDocumentPdf } from "../api/documents.js";
 import { askQuestionStream } from "../api/query.js";
+import { SUGGESTED_PROMPTS } from "../constants.js";
 import {
   buildSourceMap,
   citationLinkLabel,
@@ -14,40 +13,23 @@ import {
   stripSourceRefs,
 } from "../utils/citations.js";
 
-const ACCESS_LEVELS = [
-  { value: "public", label: "Public" },
-  { value: "hr", label: "HR" },
-  { value: "engineering", label: "Engineering" },
-  { value: "finance", label: "Finance" },
-  { value: "admin_only", label: "Admin only" },
-];
-
-const INVITE_ROLES = [
-  { value: "employee", label: "Employee" },
-  { value: "manager", label: "Manager" },
-  { value: "admin", label: "Admin" },
-];
-
-function AssistantAnswer({ content, citations, accessToken, onCitationError }) {
+function AssistantAnswer({ content, citations, onCitationError }) {
   const sourceMap = buildSourceMap(citations);
   const paragraphs = splitAnswerParagraphs(content);
 
   async function handleCitationClick(citation) {
-    if (!citation?.document_id || !accessToken) return;
+    if (!citation?.document_id) return;
     try {
       await openDocumentPdf({
         documentId: citation.document_id,
         page: citation.page,
-        accessToken,
       });
     } catch (err) {
       onCitationError?.(err.message);
     }
   }
 
-  if (paragraphs.length === 0) {
-    return null;
-  }
+  if (paragraphs.length === 0) return null;
 
   return (
     <div className="chat-content chat-markdown chat-answer-paragraphs">
@@ -61,9 +43,7 @@ function AssistantAnswer({ content, citations, accessToken, onCitationError }) {
             <span className="answer-paragraph-text">
               <ReactMarkdown
                 rehypePlugins={[rehypeSanitize]}
-                components={{
-                  p: ({ children }) => <span>{children}</span>,
-                }}
+                components={{ p: ({ children }) => <span>{children}</span> }}
               >
                 {cleanText}
               </ReactMarkdown>
@@ -88,22 +68,27 @@ function AssistantAnswer({ content, citations, accessToken, onCitationError }) {
   );
 }
 
-function ChatMessage({ message, accessToken, onCitationError }) {
+function ChatMessage({ message, onCitationError }) {
   const isUser = message.role === "user";
 
   return (
     <div className={`chat-message ${isUser ? "user" : "assistant"}`}>
-      <div className="chat-message-inner">
-        <span className="chat-role">{isUser ? "You" : "Assistant"}</span>
+      <div className="chat-avatar" aria-hidden="true">
+        {isUser ? "You" : "AI"}
+      </div>
+      <div className="chat-message-body">
         {isUser ? (
           <p className="chat-content">{message.content}</p>
         ) : message.streaming && !message.content ? (
-          <p className="chat-content typing">Generating answer…</p>
+          <div className="typing-indicator">
+            <span />
+            <span />
+            <span />
+          </div>
         ) : (
           <AssistantAnswer
             content={message.content}
             citations={message.citations}
-            accessToken={accessToken}
             onCitationError={onCitationError}
           />
         )}
@@ -113,72 +98,27 @@ function ChatMessage({ message, accessToken, onCitationError }) {
 }
 
 export default function ChatPage({
-  token,
-  userRole,
-  userEmail,
-  onLogout,
-  onOpenDocuments,
-  error,
   setError,
   loading,
   setLoading,
+  messages,
+  setMessages,
+  input,
+  setInput,
 }) {
-  const [messages, setMessages] = useState([]);
-  const [input, setInput] = useState("");
-  const [adminOpen, setAdminOpen] = useState(false);
-  const [inviteForm, setInviteForm] = useState({ email: "", role: "employee" });
-  const [inviteSuccess, setInviteSuccess] = useState(null);
-  const [uploadFile, setUploadFile] = useState(null);
-  const [uploadAccessLevel, setUploadAccessLevel] = useState("public");
-  const [uploadSuccess, setUploadSuccess] = useState(null);
-  const [queryLogs, setQueryLogs] = useState([]);
   const messagesEndRef = useRef(null);
   const textareaRef = useRef(null);
-
-  const isAdmin = userRole === "admin";
-  const canViewAnalytics = userRole === "admin" || userRole === "manager";
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
   useEffect(() => {
-    if (!adminOpen || !canViewAnalytics) return;
-    listRecentQueries({ accessToken: token, limit: 10 })
-      .then((data) => setQueryLogs(data.items ?? []))
-      .catch(() => setQueryLogs([]));
-  }, [adminOpen, canViewAnalytics, token, messages.length]);
-
-  useEffect(() => {
-    if (!uploadSuccess?.id || uploadSuccess.status !== "processing") return;
-
-    const documentId = uploadSuccess.id;
-    const intervalId = setInterval(async () => {
-      try {
-        const doc = await getDocumentStatus({ documentId, accessToken: token });
-        if (doc.status !== "processing") {
-          setUploadSuccess(doc);
-        }
-      } catch {
-        // ignore transient poll errors
-      }
-    }, 2000);
-
-    return () => clearInterval(intervalId);
-  }, [uploadSuccess?.id, uploadSuccess?.status, token]);
-
-  function uploadStatusMessage(doc) {
-    if (doc.status === "processing") {
-      return "We're preparing your document for search…";
-    }
-    if (doc.status === "ready") {
-      return "Your document is ready — you can ask questions about it now.";
-    }
-    if (doc.status === "failed") {
-      return "We couldn't prepare this document. Please try uploading again.";
-    }
-    return doc.status;
-  }
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 160)}px`;
+  }, [input]);
 
   function handleInputKeyDown(e) {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -187,35 +127,24 @@ export default function ChatPage({
     }
   }
 
-  async function handleSend(e) {
-    e.preventDefault();
-    const question = input.trim();
-    if (!question || loading) return;
+  async function sendQuestion(question) {
+    const trimmed = question.trim();
+    if (!trimmed || loading) return;
 
     setError("");
     setInput("");
-    const userMessage = { id: crypto.randomUUID(), role: "user", content: question };
+    const userMessage = { id: crypto.randomUUID(), role: "user", content: trimmed };
     setMessages((prev) => [...prev, userMessage]);
     setLoading(true);
     const assistantId = crypto.randomUUID();
     setMessages((prev) => [
       ...prev,
-      {
-        id: assistantId,
-        role: "assistant",
-        content: "",
-        citations: [],
-        streaming: true,
-      },
+      { id: assistantId, role: "assistant", content: "", citations: [], streaming: true },
     ]);
 
     try {
       await askQuestionStream({
-        question,
-        accessToken: token,
-        onCitations: () => {
-          // Citations arrive in onDone with source_index for inline links
-        },
+        question: trimmed,
         onToken: (text) => {
           setMessages((prev) =>
             prev.map((m) =>
@@ -243,13 +172,7 @@ export default function ChatPage({
       setError(errorMessage);
       setMessages((prev) =>
         prev.map((m) =>
-          m.id === assistantId
-            ? {
-                ...m,
-                content: errorMessage,
-                streaming: false,
-              }
-            : m
+          m.id === assistantId ? { ...m, content: errorMessage, streaming: false } : m
         )
       );
     } finally {
@@ -258,268 +181,79 @@ export default function ChatPage({
     }
   }
 
-  async function handleInvite(e) {
+  function handleSend(e) {
     e.preventDefault();
-    setError("");
-    setInviteSuccess(null);
-    setLoading(true);
-    try {
-      const data = await inviteUser({
-        email: inviteForm.email,
-        role: inviteForm.role,
-        accessToken: token,
-      });
-      setInviteSuccess(data);
-      setInviteForm({ email: "", role: "employee" });
-      e.target.reset();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleUpload(e) {
-    e.preventDefault();
-    setError("");
-    setUploadSuccess(null);
-    if (!uploadFile) {
-      setError("Choose a PDF file.");
-      return;
-    }
-    setLoading(true);
-    try {
-      const data = await uploadDocument({
-        file: uploadFile,
-        accessToken: token,
-        accessLevel: uploadAccessLevel,
-      });
-      setUploadSuccess(data);
-      setUploadFile(null);
-      e.target.reset();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function copyInviteCode() {
-    if (inviteSuccess?.token) {
-      navigator.clipboard.writeText(inviteSuccess.token);
-    }
+    sendQuestion(input);
   }
 
   return (
-    <div className="chat-layout">
-      <header className="chat-header">
-        <div className="chat-header-left">
-          <h1>Knowledge Assistant</h1>
-          {userEmail && (
-            <span className="user-badge">
-              {userEmail}
-              <span className="role-pill">{userRole}</span>
-            </span>
-          )}
-        </div>
-        <div className="chat-header-actions">
-          {(isAdmin || canViewAnalytics) && (
-            <button
-              type="button"
-              className="secondary header-btn"
-              onClick={() => setAdminOpen((open) => !open)}
-            >
-              {adminOpen ? "Close" : isAdmin ? "Admin" : "Analytics"}
-            </button>
-          )}
-          <button type="button" className="secondary header-btn" onClick={onLogout}>
-            Sign out
-          </button>
-        </div>
-      </header>
-
-      {error && <div className="alert error chat-banner">{error}</div>}
-
-      {(isAdmin || canViewAnalytics) && adminOpen && (
-        <aside className="admin-panel card">
-          <div className="admin-panel-head">
-            <h2>{isAdmin ? "Admin" : "Analytics"}</h2>
-            {isAdmin && (
-              <button
-                type="button"
-                className="secondary header-btn"
-                onClick={() => {
-                  setAdminOpen(false);
-                  onOpenDocuments?.();
-                }}
-              >
-                Documents
-              </button>
-            )}
-          </div>
-          <div className="admin-grid">
-            {isAdmin && (
-            <section className="admin-section">
-              <h3>Invite user</h3>
-              <p className="hint">Share the invite code with the new team member.</p>
-              <form onSubmit={handleInvite}>
-                <label>
-                  Email
-                  <input
-                    type="email"
-                    required
-                    value={inviteForm.email}
-                    onChange={(e) => setInviteForm({ ...inviteForm, email: e.target.value })}
-                  />
-                </label>
-                <label>
-                  Role
-                  <select
-                    value={inviteForm.role}
-                    onChange={(e) => setInviteForm({ ...inviteForm, role: e.target.value })}
-                  >
-                    {INVITE_ROLES.map((r) => (
-                      <option key={r.value} value={r.value}>
-                        {r.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <button type="submit" disabled={loading}>
-                  {loading ? "Creating…" : "Create invite"}
-                </button>
-              </form>
-              {inviteSuccess && (
-                <div className="alert success admin-feedback">
-                  <p>
-                    Invite sent to <strong>{inviteSuccess.email}</strong>
-                  </p>
-                  <div className="invite-code-row">
-                    <code className="invite-code">{inviteSuccess.token}</code>
-                    <button type="button" className="secondary" onClick={copyInviteCode}>
-                      Copy
-                    </button>
-                  </div>
-                </div>
-              )}
-            </section>
-            )}
-
-            {isAdmin && (
-            <section className="admin-section">
-              <h3>Upload PDF</h3>
-              <p className="hint">
-                Prototype limits: up to 15 pages per PDF and 15 documents per organization.
-                Documents are indexed for search by access level.
-              </p>
-              <form onSubmit={handleUpload}>
-                <label>
-                  Access level
-                  <select
-                    value={uploadAccessLevel}
-                    onChange={(e) => setUploadAccessLevel(e.target.value)}
-                  >
-                    {ACCESS_LEVELS.map((level) => (
-                      <option key={level.value} value={level.value}>
-                        {level.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  PDF file
-                  <input
-                    type="file"
-                    accept="application/pdf,.pdf"
-                    required
-                    onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
-                  />
-                </label>
-                <button type="submit" disabled={loading}>
-                  {loading ? "Uploading…" : "Upload"}
-                </button>
-              </form>
-              {uploadSuccess && (
-                <div
-                  className={
-                    uploadSuccess.status === "failed"
-                      ? "alert error admin-feedback"
-                      : `alert success admin-feedback${
-                          uploadSuccess.status === "processing" ? " upload-status-processing" : ""
-                        }`
-                  }
+    <div className="chat-view">
+      <div className="chat-messages">
+        {messages.length === 0 && !loading && (
+          <div className="chat-welcome">
+            <div className="welcome-badge">Enterprise AI</div>
+            <h1>How can I help you today?</h1>
+            <p>
+              Ask questions about your organization&apos;s policies and documents.
+              Answers are grounded in uploaded files with source citations.
+            </p>
+            <div className="prompt-grid">
+              {SUGGESTED_PROMPTS.map((prompt) => (
+                <button
+                  key={prompt.title}
+                  type="button"
+                  className="prompt-card"
+                  onClick={() => sendQuestion(prompt.text)}
+                  disabled={loading}
                 >
-                  <strong>{uploadSuccess.filename}</strong>
-                  <p className="upload-status-text">{uploadStatusMessage(uploadSuccess)}</p>
-                  {uploadSuccess.status === "ready" && (
-                    <p className="upload-status-meta">
-                      {uploadSuccess.chunk_count} section(s) indexed · {uploadSuccess.access_level}{" "}
-                      access
-                    </p>
-                  )}
-                </div>
-              )}
-            </section>
-            )}
-
-            {canViewAnalytics && (
-              <section className="admin-section admin-section-wide">
-                <h3>Recent queries</h3>
-                <p className="hint">Logged after each question (latency + chunks used).</p>
-                {queryLogs.length === 0 ? (
-                  <p className="hint">No queries logged yet.</p>
-                ) : (
-                  <ul className="query-log-list">
-                    {queryLogs.map((log) => (
-                      <li key={log.id}>
-                        <strong>{log.question}</strong>
-                        <span className="query-log-meta">
-                          {log.latency_ms} ms · {log.retrieved_chunk_ids?.length ?? 0} chunks
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </section>
-            )}
-          </div>
-        </aside>
-      )}
-
-      <main className="chat-main">
-        <div className="chat-messages">
-          {messages.length === 0 && !loading && (
-            <div className="chat-empty">
-              <h2>How can I help you today?</h2>
-              <p>Ask questions about your organization&apos;s uploaded documents.</p>
+                  <span className="prompt-title">{prompt.title}</span>
+                  <span className="prompt-text">{prompt.text}</span>
+                </button>
+              ))}
             </div>
-          )}
-          {messages.map((msg) => (
-            <ChatMessage
-              key={msg.id}
-              message={msg}
-              accessToken={token}
-              onCitationError={setError}
-            />
-          ))}
-          <div ref={messagesEndRef} />
-        </div>
+          </div>
+        )}
 
-        <form className="chat-composer" onSubmit={handleSend}>
+        {messages.map((msg) => (
+          <ChatMessage
+            key={msg.id}
+            message={msg}
+            onCitationError={setError}
+          />
+        ))}
+        <div ref={messagesEndRef} />
+      </div>
+
+      <form className="chat-composer" onSubmit={handleSend}>
+        <div className="composer-inner">
           <textarea
             ref={textareaRef}
             rows={1}
-            placeholder="Ask a question…"
+            placeholder="Ask about policies, procedures, or documents…"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleInputKeyDown}
             disabled={loading}
           />
-          <button type="submit" disabled={loading || !input.trim()}>
-            Send
+          <button
+            type="submit"
+            className="btn-primary composer-send"
+            disabled={loading || !input.trim()}
+            aria-label="Send message"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
           </button>
-        </form>
-      </main>
+        </div>
+        <p className="composer-hint">Press Enter to send · Shift+Enter for new line</p>
+      </form>
     </div>
   );
 }

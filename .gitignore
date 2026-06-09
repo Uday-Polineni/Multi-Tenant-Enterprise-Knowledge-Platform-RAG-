@@ -1,26 +1,85 @@
+# --- Python ---
 __pycache__/
 *.py[cod]
-.env
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.nox/
+
+# Virtual environments
 .venv/
 venv/
-*.egg-info/
+env/
+ENV/
+
+# Test & type-check caches
 .pytest_cache/
-backend/tests/regression/_corpus_pdfs/
-backend/tests/regression/_corpus_large_pdfs/
 .mypy_cache/
 .ruff_cache/
+.coverage
+htmlcov/
+.tox/
 
-# PDF uploads — contents gitignored, folder kept via .gitkeep
+# --- Environment & secrets (keep *.example templates) ---
+.env
+.env.*
+!.env.example
+docker/.env
+
+# --- Backend runtime data ---
 backend/data/uploads/*
 !backend/data/uploads/.gitkeep
-
-# Chroma vector store — contents gitignored, folder kept via .gitkeep
 backend/data/chroma/*
 !backend/data/chroma/.gitkeep
 
-# Local step-by-step build log (not published)
-docs/development.md
+# Tests (local only — not required to run the app)
+backend/tests/
+backend/pytest.ini
+backend/scripts/deploy_smoke.py
+frontend/e2e/
+frontend/playwright.config.ts
+frontend/test-results/
 
-# Frontend
+# --- Frontend ---
+node_modules/
 frontend/node_modules/
 frontend/dist/
+.vite/
+*.tsbuildinfo
+
+# --- IDE & editor (local preferences) ---
+.vscode/
+.idea/
+*.code-workspace
+*.sublime-project
+*.sublime-workspace
+
+# --- OS junk ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# --- Logs & temp files ---
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+*.bak
+*.swp
+*~
+
+# --- Docker local overrides ---
+docker-compose.override.yml
+
+# --- Local docs (not published) ---
+docs/development.md
+README.final-draft.local.md

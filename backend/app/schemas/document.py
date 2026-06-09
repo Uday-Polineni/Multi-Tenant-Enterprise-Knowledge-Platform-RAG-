@@ -3,6 +3,12 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
+from app.models.document import DocumentAccessLevel
+
+
+class DocumentAccessLevelUpdate(BaseModel):
+    access_level: DocumentAccessLevel
+
 
 class DocumentUploadResponse(BaseModel):
     id: uuid.UUID

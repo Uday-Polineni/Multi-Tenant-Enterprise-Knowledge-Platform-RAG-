@@ -1,4 +1,6 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
+import { fetchWithAuth } from "./session.js";
+
+import { API_BASE } from "./config.js";
 
 async function parseError(response) {
   try {
@@ -13,13 +15,10 @@ async function parseError(response) {
   }
 }
 
-export async function askQuestion({ question, accessToken }) {
-  const response = await fetch(`${API_BASE}/api/v1/query`, {
+export async function askQuestion({ question }) {
+  const response = await fetchWithAuth(`${API_BASE}/api/v1/query`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${accessToken}`,
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ question }),
   });
 
@@ -32,17 +31,13 @@ export async function askQuestion({ question, accessToken }) {
  */
 export async function askQuestionStream({
   question,
-  accessToken,
   onCitations,
   onToken,
   onDone,
 }) {
-  const response = await fetch(`${API_BASE}/api/v1/query/stream`, {
+  const response = await fetchWithAuth(`${API_BASE}/api/v1/query/stream`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${accessToken}`,
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ question }),
   });
 

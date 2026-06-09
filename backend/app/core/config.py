@@ -13,7 +13,8 @@ class Settings(BaseSettings):
     database_url: str
     jwt_secret: str
     jwt_algorithm: str = "HS256"
-    jwt_expire_minutes: int = 60
+    jwt_expire_minutes: int = 10
+    refresh_token_expire_days: int = 14
 
     upload_dir: str = "data/uploads"
 
@@ -56,9 +57,19 @@ class Settings(BaseSettings):
     hybrid_search_enabled: bool = True
     hybrid_rrf_k: int = 60
 
+    # Tier 1 retrieval — topic routing + query decomposition
+    topic_routing_enabled: bool = True
+    query_decomposition_enabled: bool = True
+    rag_subquery_top_k: int = 12
+
     # Prototype — upload caps (set to 0 to disable a limit, e.g. in regression tests)
     prototype_max_pdf_pages: int = 15
     prototype_max_documents_per_org: int = 15
+
+    # Optional demo login (seeded on startup when email + password are set)
+    demo_admin_email: str | None = None
+    demo_admin_password: str | None = None
+    demo_org_name: str = "Demo Organization"
 
 
 @lru_cache

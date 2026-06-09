@@ -136,6 +136,7 @@ def set_cached_answer(
     response: QueryResponse,
     query_embedding: list[float] | None = None,
     retrieved_chunk_ids: list[str] | None = None,
+    allow_semantic_cache: bool = True,
 ) -> None:
     client = redis_or_none()
     if client is None:
@@ -154,7 +155,11 @@ def set_cached_answer(
     except Exception:
         logger.exception("Failed to write answer cache for key %s", key)
 
-    if query_embedding is not None and retrieved_chunk_ids is not None:
+    if (
+        allow_semantic_cache
+        and query_embedding is not None
+        and retrieved_chunk_ids is not None
+    ):
         store_semantic_cached_answer(
             organization_id=organization_id,
             role=role,

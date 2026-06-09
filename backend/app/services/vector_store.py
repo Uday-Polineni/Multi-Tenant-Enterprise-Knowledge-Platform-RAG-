@@ -246,6 +246,57 @@ def upsert_chunks(
     )
 
 
+def update_document_access_level_in_index(
+    *,
+    organization_id: uuid.UUID,
+    document: Document,
+    chunks: list[Chunk],
+    access_level: str,
+) -> None:
+    """Patch access_level metadata on existing Chroma vectors for a document."""
+    if not chunks:
+        return
+
+    collection = get_org_collection(organization_id)
+    if collection.count() == 0:
+        return
+
+    indexed_ids = set(_chroma_ids_for_document(collection, document.id))
+    if not indexed_ids:
+        return
+
+    ids: list[str] = []
+    metadatas: list[dict[str, str | int]] = []
+    for chunk in chunks:
+        chunk_id = str(chunk.id)
+        if chunk_id not in indexed_ids:
+            continue
+        ids.append(chunk_id)
+        metadatas.append(
+            _chunk_metadata(
+                organization_id=organization_id,
+                document_id=chunk.document_id,
+                chunk_id=chunk.id,
+                filename=document.filename,
+                access_level=access_level,
+                page_number=chunk.page_number,
+                section_name=chunk.section_name,
+            )
+        )
+
+    if not ids:
+        return
+
+    try:
+        collection.update(ids=ids, metadatas=metadatas)
+    except Exception:
+        logger.exception(
+            "Failed to update Chroma access_level for document %s in org %s",
+            document.id,
+            organization_id,
+        )
+
+
 def delete_chunks_for_document(
     *,
     organization_id: uuid.UUID,
@@ -271,23 +322,54 @@ def delete_chunks_for_document(
         )
 
 
+def _build_chroma_where(
+    *,
+    allowed_access_levels: list[str] | None,
+    document_ids: list[uuid.UUID] | None = None,
+    page_number: int | None = None,
+) -> dict | None:
+    clauses: list[dict] = []
+    if allowed_access_levels is not None:
+        if not allowed_access_levels:
+            return {}
+        clauses.append({"access_level": {"$in": allowed_access_levels}})
+    if document_ids:
+        id_strs = [str(document_id) for document_id in document_ids]
+        if len(id_strs) == 1:
+            clauses.append({"document_id": id_strs[0]})
+        else:
+            clauses.append({"document_id": {"$in": id_strs}})
+    if page_number is not None:
+        clauses.append({"page_number": page_number})
+
+    if not clauses:
+        return None
+    if len(clauses) == 1:
+        return clauses[0]
+    return {"$and": clauses}
+
+
 def search(
     *,
     organization_id: uuid.UUID,
     query_embedding: list[float],
     top_k: int = 5,
     allowed_access_levels: list[str] | None = None,
+    document_ids: list[uuid.UUID] | None = None,
+    page_number: int | None = None,
 ) -> list[ChunkSearchResult]:
     collection = get_org_collection(organization_id)
     count = collection.count()
     if count == 0:
         return []
 
-    where: dict | None = None
-    if allowed_access_levels is not None:
-        if not allowed_access_levels:
-            return []
-        where = {"access_level": {"$in": allowed_access_levels}}
+    where = _build_chroma_where(
+        allowed_access_levels=allowed_access_levels,
+        document_ids=document_ids,
+        page_number=page_number,
+    )
+    if where == {}:
+        return []
 
     try:
         response = collection.query(

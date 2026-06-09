@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.repositories.chunk import search_chunks_fulltext
+from app.services.query_routing import extract_audit_token
 from app.services.vector_store import ChunkSearchResult, search
 
 _COMMON_CAP_WORDS = frozenset({
@@ -32,6 +33,10 @@ def supplementary_fts_queries(question: str) -> list[str]:
 
     for cert_id in re.findall(r"CERT-[a-z]+-\d+", question, re.IGNORECASE):
         queries.append(cert_id)
+
+    audit_token = extract_audit_token(question)
+    if audit_token:
+        queries.append(audit_token)
 
     page_match = re.search(r"\bpage\s+(\d+)\b", question, re.IGNORECASE)
     if page_match:
@@ -73,6 +78,9 @@ def hybrid_retrieve(
     query_embedding: list[float],
     allowed_access_levels: list[str],
     top_k: int,
+    document_ids: list[uuid.UUID] | None = None,
+    page_number: int | None = None,
+    audit_token: str | None = None,
 ) -> tuple[list[ChunkSearchResult], dict[str, int]]:
     settings = get_settings()
     timings: dict[str, int] = {}
@@ -85,6 +93,8 @@ def hybrid_retrieve(
         query_embedding=query_embedding,
         top_k=top_k,
         allowed_access_levels=allowed_access_levels,
+        document_ids=document_ids,
+        page_number=page_number,
     )
     timings["chroma_ms"] = int((time.perf_counter() - t0) * 1000)
 
@@ -100,6 +110,9 @@ def hybrid_retrieve(
         question=question,
         allowed_access_levels=allowed_access_levels,
         top_k=top_k,
+        document_ids=document_ids,
+        page_number=page_number,
+        audit_token=audit_token,
     )
     timings["bm25_ms"] = int((time.perf_counter() - t0) * 1000)
 
@@ -139,11 +152,17 @@ def _collect_fts_ranked_lists(
     question: str,
     allowed_access_levels: list[str],
     top_k: int,
+    document_ids: list[uuid.UUID] | None = None,
+    page_number: int | None = None,
+    audit_token: str | None = None,
 ) -> list[list[ChunkSearchResult]]:
     lists: list[list[ChunkSearchResult]] = []
     seen_queries: set[str] = set()
+    leading_queries: list[str] = []
+    if audit_token:
+        leading_queries.append(audit_token)
 
-    for query in [question, *supplementary_fts_queries(question)]:
+    for query in [*leading_queries, question, *supplementary_fts_queries(question)]:
         key = query.strip().lower()
         if not key or key in seen_queries:
             continue
@@ -155,6 +174,9 @@ def _collect_fts_ranked_lists(
             question=query,
             allowed_access_levels=allowed_access_levels,
             top_k=top_k,
+            document_ids=document_ids,
+            page_number=page_number,
+            audit_token=audit_token if page_number is not None else None,
         )
         if hits:
             lists.append(hits)

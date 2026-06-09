@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -6,10 +8,25 @@ from app.api.auth.router import router as auth_router
 from app.api.documents.router import router as documents_router
 from app.api.query.router import router as query_router
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    from app.core.database import SessionLocal
+    from app.services.demo_seed import ensure_demo_admin
+
+    db = SessionLocal()
+    try:
+        ensure_demo_admin(db)
+    finally:
+        db.close()
+    yield
+
+
 app = FastAPI(
     title="Enterprise Knowledge Assistant",
     description="Multi-tenant enterprise knowledge platform",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(

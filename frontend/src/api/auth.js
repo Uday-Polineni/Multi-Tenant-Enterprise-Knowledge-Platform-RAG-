@@ -1,4 +1,6 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
+import { fetchWithAuth } from "./session.js";
+
+import { API_BASE } from "./config.js";
 
 async function parseError(response) {
   try {
@@ -30,15 +32,19 @@ export async function register({ email, password, organizationName, inviteToken 
   return response.json();
 }
 
-export async function inviteUser({ email, role, accessToken }) {
-  const response = await fetch(`${API_BASE}/api/v1/auth/invite`, {
+export async function inviteUser({ email, role }) {
+  const response = await fetchWithAuth(`${API_BASE}/api/v1/auth/invite`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${accessToken}`,
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, role }),
   });
+  if (!response.ok) throw new Error(await parseError(response));
+  return response.json();
+}
+
+export async function fetchDemoCredentials() {
+  const response = await fetch(`${API_BASE}/api/v1/auth/demo-credentials`);
+  if (response.status === 404) return null;
   if (!response.ok) throw new Error(await parseError(response));
   return response.json();
 }

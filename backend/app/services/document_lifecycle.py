@@ -62,6 +62,44 @@ def clear_document_index(
     invalidate_org_answer_cache(organization_id=organization_id)
 
 
+def update_document_access_level(
+    db: Session,
+    *,
+    organization_id: uuid.UUID,
+    document_id: uuid.UUID,
+    access_level: DocumentAccessLevel,
+) -> Document:
+    from app.services.vector_store import update_document_access_level_in_index
+
+    document = get_document_by_id(
+        db,
+        document_id=document_id,
+        organization_id=organization_id,
+    )
+    if document is None:
+        raise DocumentNotFoundError(f"Document {document_id} not found")
+
+    if document.access_level == access_level:
+        return document
+
+    document.access_level = access_level
+    db.flush()
+
+    if document.status == DocumentStatus.READY:
+        chunks = list(
+            db.scalars(select(Chunk).where(Chunk.document_id == document.id)).all()
+        )
+        update_document_access_level_in_index(
+            organization_id=organization_id,
+            document=document,
+            chunks=chunks,
+            access_level=access_level.value,
+        )
+
+    invalidate_org_answer_cache(organization_id=organization_id)
+    return document
+
+
 def prepare_document_for_reingest(
     db: Session,
     *,

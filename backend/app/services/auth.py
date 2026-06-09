@@ -6,12 +6,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.core.security import create_access_token, hash_password, verify_password
+from app.core.security import hash_password, verify_password
 from app.models.user import User, UserRole
 from app.repositories.invite import create_invite, get_invite_by_token, mark_invite_used
 from app.repositories.organization import create_organization
 from app.repositories.user import create_user, get_user_by_email
 from app.schemas.auth import InviteRequest, InviteResponse, LoginRequest, RegisterRequest, TokenResponse
+from app.services.refresh_token import issue_token_pair
 
 
 class InvalidCredentialsError(Exception):
@@ -42,10 +43,9 @@ def register(db: Session, data: RegisterRequest) -> TokenResponse:
         password_hash=hash_password(data.password),
         role=UserRole.ADMIN,
     )
+    tokens = issue_token_pair(db, user)
     db.commit()
-    db.refresh(user)
-
-    return _token_for_user(user)
+    return tokens
 
 
 def _register_with_invite(db: Session, data: RegisterRequest) -> TokenResponse:
@@ -78,10 +78,9 @@ def _register_with_invite(db: Session, data: RegisterRequest) -> TokenResponse:
         role=invite.role,
     )
     mark_invite_used(db, invite=invite)
+    tokens = issue_token_pair(db, user)
     db.commit()
-    db.refresh(user)
-
-    return _token_for_user(user)
+    return tokens
 
 
 def create_invite_for_org(
@@ -129,13 +128,6 @@ def login(db: Session, data: LoginRequest) -> TokenResponse:
     if user is None or not verify_password(data.password, user.password_hash):
         raise InvalidCredentialsError("Invalid email or password")
 
-    return _token_for_user(user)
-
-
-def _token_for_user(user: User) -> TokenResponse:
-    access_token = create_access_token(
-        user_id=str(user.id),
-        organization_id=str(user.organization_id),
-        role=user.role.value,
-    )
-    return TokenResponse(access_token=access_token)
+    tokens = issue_token_pair(db, user)
+    db.commit()
+    return tokens

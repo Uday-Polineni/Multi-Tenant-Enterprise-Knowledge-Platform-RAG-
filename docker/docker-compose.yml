@@ -1,31 +1,97 @@
+# Full stack: postgres + redis + api + worker + nginx (frontend + /api proxy)
+#
+# Setup:
+#   cp .env.example .env   # edit secrets
+#   docker compose up --build -d
+#
+# App: http://localhost  (API at /api/v1/..., health at /health)
+
+name: eka
+
+x-backend-env: &backend-env
+  env_file: .env
+  environment:
+    DATABASE_URL: postgresql://eka:${POSTGRES_PASSWORD}@postgres:5432/eka
+    REDIS_URL: redis://redis:6379/0
+
+x-backend-volumes: &backend-volumes
+  - eka_uploads:/app/data/uploads
+  - eka_chroma:/app/data/chroma
+
 services:
   postgres:
     image: postgres:16-alpine
     container_name: eka-postgres
     environment:
       POSTGRES_USER: eka
-      POSTGRES_PASSWORD: eka_dev_password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: eka
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U eka -d eka"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
     container_name: eka-redis
-    ports:
-      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
-      retries: 5
+      retries: 10
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    container_name: eka-api
+    <<: *backend-env
+    volumes: *backend-volumes
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    container_name: eka-worker
+    <<: *backend-env
+    volumes: *backend-volumes
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_started
+    entrypoint: ["arq"]
+    command: ["app.worker.settings.WorkerSettings"]
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.web
+      args:
+        VITE_DEMO_ADMIN_EMAIL: ${DEMO_ADMIN_EMAIL:-}
+        VITE_DEMO_ADMIN_PASSWORD: ${DEMO_ADMIN_PASSWORD:-}
+    container_name: eka-web
+    ports:
+      - "80:80"
+    depends_on:
+      - api
+    restart: unless-stopped
 
 volumes:
   postgres_data:
+  eka_uploads:
+  eka_chroma:

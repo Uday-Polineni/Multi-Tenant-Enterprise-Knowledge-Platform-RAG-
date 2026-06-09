@@ -60,6 +60,9 @@ def search_chunks_fulltext(
     question: str,
     allowed_access_levels: list[str],
     top_k: int,
+    document_ids: list[uuid.UUID] | None = None,
+    page_number: int | None = None,
+    audit_token: str | None = None,
 ) -> list[ChunkSearchResult]:
     if not allowed_access_levels or not question.strip():
         return []
@@ -68,6 +71,19 @@ def search_chunks_fulltext(
     rank = func.ts_rank_cd(Chunk.search_vector, ts_query)
 
     access_levels = [DocumentAccessLevel(level) for level in allowed_access_levels]
+
+    filters = [
+        Document.organization_id == organization_id,
+        Document.access_level.in_(access_levels),
+        Chunk.search_vector.is_not(None),
+        Chunk.search_vector.op("@@")(ts_query),
+    ]
+    if document_ids:
+        filters.append(Chunk.document_id.in_(document_ids))
+    if page_number is not None:
+        filters.append(Chunk.page_number == page_number)
+    if audit_token:
+        filters.append(Chunk.content.ilike(f"%{audit_token}%"))
 
     stmt = (
         select(
@@ -80,12 +96,7 @@ def search_chunks_fulltext(
             rank.label("rank"),
         )
         .join(Document, Chunk.document_id == Document.id)
-        .where(
-            Document.organization_id == organization_id,
-            Document.access_level.in_(access_levels),
-            Chunk.search_vector.is_not(None),
-            Chunk.search_vector.op("@@")(ts_query),
-        )
+        .where(*filters)
         .order_by(rank.desc())
         .limit(top_k)
     )

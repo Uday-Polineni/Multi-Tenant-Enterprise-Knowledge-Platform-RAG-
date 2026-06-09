@@ -1,4 +1,6 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
+import { fetchWithAuth } from "./session.js";
+
+import { API_BASE } from "./config.js";
 
 async function parseError(response) {
   try {
@@ -13,24 +15,19 @@ async function parseError(response) {
   }
 }
 
-export async function listDocuments({ accessToken }) {
-  const response = await fetch(`${API_BASE}/api/v1/documents`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
+export async function listDocuments() {
+  const response = await fetchWithAuth(`${API_BASE}/api/v1/documents`);
   if (!response.ok) throw new Error(await parseError(response));
   return response.json();
 }
 
-export async function uploadDocument({ file, accessToken, accessLevel = "public" }) {
+export async function uploadDocument({ file, accessLevel = "public" }) {
   const formData = new FormData();
   formData.append("file", file);
   formData.append("access_level", accessLevel);
 
-  const response = await fetch(`${API_BASE}/api/v1/documents/upload`, {
+  const response = await fetchWithAuth(`${API_BASE}/api/v1/documents/upload`, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-    },
     body: formData,
   });
 
@@ -38,27 +35,31 @@ export async function uploadDocument({ file, accessToken, accessLevel = "public"
   return response.json();
 }
 
-export async function getDocumentStatus({ documentId, accessToken }) {
-  const response = await fetch(`${API_BASE}/api/v1/documents/${documentId}`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
+export async function getDocumentStatus({ documentId }) {
+  const response = await fetchWithAuth(`${API_BASE}/api/v1/documents/${documentId}`);
+  if (!response.ok) throw new Error(await parseError(response));
+  return response.json();
+}
+
+export async function updateDocumentAccessLevel({ documentId, accessLevel }) {
+  const response = await fetchWithAuth(`${API_BASE}/api/v1/documents/${documentId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ access_level: accessLevel }),
   });
   if (!response.ok) throw new Error(await parseError(response));
   return response.json();
 }
 
-export async function deleteDocument({ documentId, accessToken }) {
-  const response = await fetch(`${API_BASE}/api/v1/documents/${documentId}`, {
+export async function deleteDocument({ documentId }) {
+  const response = await fetchWithAuth(`${API_BASE}/api/v1/documents/${documentId}`, {
     method: "DELETE",
-    headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (!response.ok) throw new Error(await parseError(response));
 }
 
-/** Fetch PDF with auth and open in a new tab (optional #page=N). */
-export async function openDocumentPdf({ documentId, page, accessToken }) {
-  const response = await fetch(`${API_BASE}/api/v1/documents/${documentId}/file`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
+export async function openDocumentPdf({ documentId, page }) {
+  const response = await fetchWithAuth(`${API_BASE}/api/v1/documents/${documentId}/file`);
   if (!response.ok) throw new Error(await parseError(response));
 
   const blob = await response.blob();

@@ -95,6 +95,29 @@ def list_documents_for_org(
     return list(db.scalars(stmt).all())
 
 
+def list_queryable_documents_for_role(
+    db: Session,
+    *,
+    organization_id: uuid.UUID,
+    allowed_access_levels: list[str],
+) -> list[Document]:
+    """Ready documents the user can retrieve in RAG for their role."""
+    if not allowed_access_levels:
+        return []
+
+    levels = [DocumentAccessLevel(level) for level in allowed_access_levels]
+    stmt = (
+        select(Document)
+        .where(
+            Document.organization_id == organization_id,
+            Document.access_level.in_(levels),
+            Document.status == DocumentStatus.READY,
+        )
+        .order_by(Document.created_at.desc())
+    )
+    return list(db.scalars(stmt).all())
+
+
 def list_documents_by_filename(
     db: Session,
     *,

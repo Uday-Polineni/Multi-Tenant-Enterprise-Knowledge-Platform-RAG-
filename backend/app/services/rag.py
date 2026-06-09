@@ -25,6 +25,30 @@ from app.services.cache import (
     set_cached_embedding,
 )
 from app.services.hybrid_search import hybrid_retrieve
+from app.services.query_intent import (
+    ASSISTANT_INTRO_ANSWER,
+    is_assistant_capability_question,
+    is_assistant_meta_question,
+)
+from app.services.query_decomposition import (
+    SearchQuery,
+    build_search_queries,
+    estimate_question_parts,
+    merge_ranked_hit_lists,
+    resolve_subquery_document_ids,
+)
+from app.services.query_routing import (
+    extract_audit_token,
+    extract_page_number,
+    extract_pdf_filenames,
+    prefer_hits_containing_token,
+    resolve_document_filter_ids,
+    should_skip_document_diversification,
+)
+from app.services.topic_routing import (
+    detect_topic_slugs,
+    resolve_document_ids_for_topic_slugs,
+)
 from app.services.rerank import rerank_hits
 from app.services.vector_store import (
     ChunkSearchResult,
@@ -59,6 +83,13 @@ RAG_USER_INSTRUCTIONS = """Instructions:
 - Do not invent numbers, names, dates, or policies. Quote figures and names exactly as they appear in the context.
 - For yes/no questions, lead with a direct yes or no when the context supports it, then explain briefly with evidence."""
 
+RAG_MULTI_PART_INSTRUCTIONS = """Multi-part question ({part_count} distinct parts detected):
+- Answer EVERY part you can find context for. Use one short paragraph per part.
+- Do not stop after the first part — continue through all parts before finishing.
+- Label each paragraph by topic when helpful (e.g. PTO, datacenter, MFA).
+- If a part has no supporting context, say exactly what is missing for that part only.
+- Never skip a part silently."""
+
 
 def answer_question(
     *,
@@ -70,6 +101,16 @@ def answer_question(
 ) -> QueryResponse:
     started = time.perf_counter()
     timings: dict[str, int] = {}
+
+    meta_response = _try_assistant_meta_response(
+        organization_id=organization_id,
+        user_id=user_id,
+        question=question,
+        started=started,
+        timings=timings,
+    )
+    if meta_response is not None:
+        return meta_response
 
     cached, cache_meta = _lookup_cached_answer(
         db,
@@ -95,7 +136,7 @@ def answer_question(
         return cached
 
     query_embedding = cache_meta["query_embedding"]
-    hits, timings = _search_hits(
+    hits, timings, part_count = _search_hits(
         db,
         organization_id=organization_id,
         query_embedding=query_embedding,
@@ -129,11 +170,15 @@ def answer_question(
         return response
 
     llm_hits = trim_hits_for_llm(hits)
-    user_prompt = _build_user_prompt(question=question, hits=llm_hits)
+    user_prompt = _build_user_prompt(
+        question=question,
+        hits=llm_hits,
+        part_count=part_count,
+    )
 
     t_llm = time.perf_counter()
     llm_result = get_llm_provider().complete_with_usage(
-        system=_build_system_prompt(),
+        system=_build_system_prompt(part_count=part_count),
         user=user_prompt,
     )
     timings["llm_total_ms"] = int((time.perf_counter() - t_llm) * 1000)
@@ -181,6 +226,33 @@ def stream_answer_question(
     started = time.perf_counter()
     timings: dict[str, int] = {}
 
+    meta_response = _try_assistant_meta_response(
+        organization_id=organization_id,
+        user_id=user_id,
+        question=question,
+        started=started,
+        timings=timings,
+    )
+    if meta_response is not None:
+        timings["total_ms"] = _elapsed_ms(started)
+        yield _sse(
+            "citations",
+            {
+                "citations": [],
+                "stage_timings_ms": dict(timings),
+            },
+        )
+        yield _sse(
+            "done",
+            {
+                "answer": meta_response.answer,
+                "citations": [],
+                "latency_ms": timings["total_ms"],
+                "stage_timings_ms": timings,
+            },
+        )
+        return
+
     cached, cache_meta = _lookup_cached_answer(
         db,
         organization_id=organization_id,
@@ -225,7 +297,7 @@ def stream_answer_question(
         return
 
     query_embedding = cache_meta["query_embedding"]
-    hits, timings = _search_hits(
+    hits, timings, part_count = _search_hits(
         db,
         organization_id=organization_id,
         query_embedding=query_embedding,
@@ -276,7 +348,11 @@ def stream_answer_question(
         return
 
     llm_hits = trim_hits_for_llm(hits)
-    user_prompt = _build_user_prompt(question=question, hits=llm_hits)
+    user_prompt = _build_user_prompt(
+        question=question,
+        hits=llm_hits,
+        part_count=part_count,
+    )
 
     t_llm = time.perf_counter()
     answer_parts: list[str] = []
@@ -284,7 +360,7 @@ def stream_answer_question(
     token_usage: dict[str, int] | None = None
 
     for part in get_llm_provider().stream_complete_with_usage(
-        system=_build_system_prompt(),
+        system=_build_system_prompt(part_count=part_count),
         user=user_prompt,
     ):
         if isinstance(part, dict):
@@ -336,6 +412,36 @@ def stream_answer_question(
     )
 
 
+def _try_assistant_meta_response(
+    *,
+    organization_id: uuid.UUID,
+    user_id: uuid.UUID,
+    question: str,
+    started: float,
+    timings: dict[str, int],
+) -> QueryResponse | None:
+    if not is_assistant_meta_question(question):
+        return None
+
+    answer = (
+        ASSISTANT_INTRO_ANSWER
+        if is_assistant_capability_question(question)
+        else NO_CONTEXT_ANSWER
+    )
+    response = QueryResponse(answer=answer, citations=[])
+    timings["total_ms"] = _elapsed_ms(started)
+    _schedule_query_log(
+        organization_id=organization_id,
+        user_id=user_id,
+        question=question,
+        answer=response.answer,
+        latency_ms=timings["total_ms"],
+        retrieved_chunk_ids=[],
+        token_usage={"assistant_meta": True, "stage_timings_ms": timings},
+    )
+    return response
+
+
 def _lookup_cached_answer(
     db: Session,
     *,
@@ -344,6 +450,10 @@ def _lookup_cached_answer(
     question: str,
     timings: dict[str, int],
 ) -> tuple[QueryResponse | None, dict]:
+    if is_assistant_meta_question(question):
+        query_embedding, timings = _get_query_embedding(question, timings)
+        return None, {"query_embedding": query_embedding}
+
     exact = get_cached_answer(
         organization_id=organization_id,
         role=role,
@@ -357,6 +467,9 @@ def _lookup_cached_answer(
         }
 
     query_embedding, timings = _get_query_embedding(question, timings)
+    if _is_scope_sensitive_question(question):
+        return None, {"query_embedding": query_embedding}
+
     semantic_hit = get_semantic_cache_hit(
         organization_id=organization_id,
         role=role,
@@ -395,34 +508,139 @@ def _search_hits(
     question: str,
     role: str,
     timings: dict[str, int],
-) -> tuple[list[ChunkSearchResult], dict[str, int]]:
+) -> tuple[list[ChunkSearchResult], dict[str, int], int]:
     settings = get_settings()
     allowed_levels = allowed_levels_for_role(role)
+    mentioned_filenames = extract_pdf_filenames(question)
+    document_filter_ids = resolve_document_filter_ids(
+        db,
+        organization_id=organization_id,
+        filenames=mentioned_filenames,
+    )
+    scoped_document_ids = (
+        document_filter_ids if document_filter_ids else None
+    )
+    page_number = extract_page_number(question)
+    audit_token = extract_audit_token(question)
+
+    topic_slugs = (
+        detect_topic_slugs(question) if settings.topic_routing_enabled else []
+    )
+    topic_slug_to_document_id: dict[str, uuid.UUID] = {}
+    topic_document_ids: list[uuid.UUID] = []
+    if settings.topic_routing_enabled and topic_slugs:
+        for slug in topic_slugs:
+            resolved = resolve_document_ids_for_topic_slugs(
+                db,
+                organization_id=organization_id,
+                topic_slugs=[slug],
+            )
+            if resolved:
+                topic_slug_to_document_id[slug] = resolved[0]
+                topic_document_ids.append(resolved[0])
+
+    search_queries = (
+        build_search_queries(question)
+        if settings.query_decomposition_enabled
+        else [SearchQuery(text=question)]
+    )
+    part_count = estimate_question_parts(search_queries, question)
+
+    use_decomposed = (
+        settings.query_decomposition_enabled
+        and len(search_queries) > 1
+        and page_number is None
+        and audit_token is None
+    )
 
     try:
-        hits, search_timings = hybrid_retrieve(
-            db,
-            organization_id=organization_id,
-            question=question,
-            query_embedding=query_embedding,
-            allowed_access_levels=allowed_levels,
-            top_k=settings.rag_search_top_k,
-        )
+        if use_decomposed:
+            hits, search_timings = _retrieve_decomposed(
+                db,
+                organization_id=organization_id,
+                question=question,
+                query_embedding=query_embedding,
+                search_queries=search_queries,
+                allowed_access_levels=allowed_levels,
+                global_document_ids=scoped_document_ids,
+                topic_slug_to_document_id=topic_slug_to_document_id,
+                subquery_top_k=settings.rag_subquery_top_k,
+                merge_top_k=settings.rag_search_top_k,
+                timings=timings,
+            )
+        else:
+            document_ids = scoped_document_ids
+            if (
+                settings.topic_routing_enabled
+                and topic_document_ids
+                and document_ids is None
+                and len(topic_slugs) == 1
+            ):
+                document_ids = topic_document_ids
+
+            hits, search_timings = hybrid_retrieve(
+                db,
+                organization_id=organization_id,
+                question=question,
+                query_embedding=query_embedding,
+                allowed_access_levels=allowed_levels,
+                top_k=settings.rag_search_top_k,
+                document_ids=document_ids,
+                page_number=page_number,
+                audit_token=audit_token,
+            )
     except VectorIndexCorruptedError:
         logger.warning(
             "Chroma index corrupt for org %s; rebuilding from Postgres before retry",
             organization_id,
         )
         rebuild_org_vector_index(db, organization_id=organization_id)
-        hits, search_timings = hybrid_retrieve(
-            db,
-            organization_id=organization_id,
-            question=question,
-            query_embedding=query_embedding,
-            allowed_access_levels=allowed_levels,
-            top_k=settings.rag_search_top_k,
-        )
+        if use_decomposed:
+            hits, search_timings = _retrieve_decomposed(
+                db,
+                organization_id=organization_id,
+                question=question,
+                query_embedding=query_embedding,
+                search_queries=search_queries,
+                allowed_access_levels=allowed_levels,
+                global_document_ids=scoped_document_ids,
+                topic_slug_to_document_id=topic_slug_to_document_id,
+                subquery_top_k=settings.rag_subquery_top_k,
+                merge_top_k=settings.rag_search_top_k,
+                timings=timings,
+            )
+        else:
+            document_ids = scoped_document_ids
+            if (
+                settings.topic_routing_enabled
+                and topic_document_ids
+                and document_ids is None
+                and len(topic_slugs) == 1
+            ):
+                document_ids = topic_document_ids
+            hits, search_timings = hybrid_retrieve(
+                db,
+                organization_id=organization_id,
+                question=question,
+                query_embedding=query_embedding,
+                allowed_access_levels=allowed_levels,
+                top_k=settings.rag_search_top_k,
+                document_ids=document_ids,
+                page_number=page_number,
+                audit_token=audit_token,
+            )
+
     timings.update(search_timings)
+    if scoped_document_ids:
+        timings["document_filter_count"] = len(scoped_document_ids)
+    if topic_slugs:
+        timings["topic_count"] = len(topic_slugs)
+    if use_decomposed:
+        timings["subquery_count"] = len(search_queries)
+    if page_number is not None:
+        timings["page_filter"] = page_number
+    if audit_token:
+        timings["audit_token_filter"] = 1
 
     t0 = time.perf_counter()
     hits = rerank_hits(
@@ -430,14 +648,79 @@ def _search_hits(
         hits=hits,
         top_n=settings.rag_search_top_k,
     )
-    hits = diversify_hits_by_document(
-        hits,
-        top_n=settings.rag_rerank_top_n,
-        min_per_document=2,
-    )
+    if audit_token:
+        hits = prefer_hits_containing_token(hits, audit_token)
+    if should_skip_document_diversification(
+        document_filter_ids,
+        page_number=page_number,
+        topic_count=len(topic_slugs),
+    ):
+        hits = hits[: settings.rag_rerank_top_n]
+    else:
+        hits = diversify_hits_by_document(
+            hits,
+            top_n=settings.rag_rerank_top_n,
+            min_per_document=2,
+        )
     timings["rerank_ms"] = int((time.perf_counter() - t0) * 1000)
 
-    return hits, timings
+    return hits, timings, part_count
+
+
+def _retrieve_decomposed(
+    db: Session,
+    *,
+    organization_id: uuid.UUID,
+    question: str,
+    query_embedding: list[float],
+    search_queries: list[SearchQuery],
+    allowed_access_levels: list[str],
+    global_document_ids: list[uuid.UUID] | None,
+    topic_slug_to_document_id: dict[str, uuid.UUID],
+    subquery_top_k: int,
+    merge_top_k: int,
+    timings: dict[str, int],
+) -> tuple[list[ChunkSearchResult], dict[str, int]]:
+    hit_lists: list[list[ChunkSearchResult]] = []
+    aggregate_timings: dict[str, int] = {
+        "chroma_ms": 0,
+        "bm25_ms": 0,
+        "rrf_ms": 0,
+    }
+
+    for index, search_query in enumerate(search_queries):
+        sub_timings: dict[str, int] = {}
+        sub_embedding, _ = _get_query_embedding(search_query.text, sub_timings)
+        embed_ms = sub_timings.get("embed_ms", 0)
+        if index == 0:
+            timings["embed_ms"] = embed_ms
+        else:
+            timings[f"embed_subquery_{index}_ms"] = embed_ms
+
+        document_ids = resolve_subquery_document_ids(
+            topic_slug=search_query.topic_slug,
+            topic_slug_to_document_id=topic_slug_to_document_id,
+            global_document_ids=global_document_ids,
+        )
+        sub_hits, sub_timings = hybrid_retrieve(
+            db,
+            organization_id=organization_id,
+            question=search_query.text,
+            query_embedding=sub_embedding,
+            allowed_access_levels=allowed_access_levels,
+            top_k=subquery_top_k,
+            document_ids=document_ids,
+        )
+        if sub_hits:
+            hit_lists.append(sub_hits)
+        for key in aggregate_timings:
+            aggregate_timings[key] += sub_timings.get(key, 0)
+
+    if not hit_lists:
+        return [], aggregate_timings
+
+    merged = merge_ranked_hit_lists(hit_lists, top_n=merge_top_k)
+    return merged, aggregate_timings
 
 
 def _store_response_cache(
@@ -456,6 +739,16 @@ def _store_response_cache(
         response=response,
         query_embedding=query_embedding,
         retrieved_chunk_ids=retrieved_chunk_ids,
+        allow_semantic_cache=not _is_scope_sensitive_question(question),
+    )
+
+
+def _is_scope_sensitive_question(question: str) -> bool:
+    """Questions that must not share semantic cache entries with similar phrasing."""
+    return (
+        extract_page_number(question) is not None
+        or extract_audit_token(question) is not None
+        or is_assistant_meta_question(question)
     )
 
 
@@ -599,11 +892,22 @@ def normalize_llm_answer(answer: str) -> str:
     return text
 
 
-def _build_system_prompt() -> str:
+def _build_system_prompt(*, part_count: int = 1) -> str:
+    if part_count >= 2:
+        return (
+            f"{RAG_SYSTEM_PROMPT}\n\n"
+            "Important: The user's question has multiple parts. "
+            "You must address each part in a separate paragraph before ending your response."
+        )
     return RAG_SYSTEM_PROMPT
 
 
-def _build_user_prompt(*, question: str, hits: list[ChunkSearchResult]) -> str:
+def _build_user_prompt(
+    *,
+    question: str,
+    hits: list[ChunkSearchResult],
+    part_count: int = 1,
+) -> str:
     blocks: list[str] = []
     for index, hit in enumerate(hits, start=1):
         header = f"[Source {index}: {hit.filename}"
@@ -616,10 +920,13 @@ def _build_user_prompt(*, question: str, hits: list[ChunkSearchResult]) -> str:
         blocks.append(f"{header}\n{hit.content}")
 
     context = "\n\n".join(blocks)
+    instructions = RAG_USER_INSTRUCTIONS
+    if part_count >= 2:
+        instructions = f"{instructions}\n\n{RAG_MULTI_PART_INSTRUCTIONS.format(part_count=part_count)}"
     return (
         f"Context:\n{context}\n\n"
         f"Question: {question}\n\n"
-        f"{RAG_USER_INSTRUCTIONS}"
+        f"{instructions}"
     )
 
 

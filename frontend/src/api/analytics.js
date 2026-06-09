@@ -1,4 +1,6 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
+import { fetchWithAuth } from "./session.js";
+
+import { API_BASE } from "./config.js";
 
 async function parseError(response) {
   try {
@@ -13,12 +15,9 @@ async function parseError(response) {
   }
 }
 
-export async function listRecentQueries({ accessToken, limit = 20 }) {
-  const response = await fetch(
-    `${API_BASE}/api/v1/analytics/queries?limit=${limit}`,
-    {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    }
+export async function listRecentQueries({ limit = 20 }) {
+  const response = await fetchWithAuth(
+    `${API_BASE}/api/v1/analytics/queries?limit=${limit}`
   );
   if (!response.ok) throw new Error(await parseError(response));
   return response.json();

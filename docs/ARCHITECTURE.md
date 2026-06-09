@@ -1,7 +1,7 @@
 # Enterprise Knowledge Assistant — Architecture Decision Record
 
-Status: **Frozen** (pre-implementation)  
-Last updated: 2026-06-03
+Status: **Implemented** (ADR — may lag [README.md](../README.md) for operational detail)  
+Last updated: 2026-06-09
 
 ---
 
