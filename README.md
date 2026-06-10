@@ -75,7 +75,9 @@ Open http://localhost:5173. Env reference: [`backend/.env.example`](backend/.env
 
 ### Continuous deployment (GitHub Actions)
 
-Pushes to `main` that touch `backend/`, `frontend/`, `docker/`, or the deploy script trigger [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml). The workflow SSHs into EC2 and runs [`scripts/deploy-ec2.sh`](scripts/deploy-ec2.sh): `git fetch` + reset to `origin/main`, then `docker compose up --build -d`, then waits for `GET /health`.
+Pushes to `main` trigger [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) **only when files under `backend/`, `frontend/`, `docker/`, `scripts/deploy-ec2.sh`, or the workflow itself change**. README, `.gitignore`, and other docs-only commits do **not** run deploy (by design). Use **Actions → Deploy to EC2 → Run workflow** to deploy manually anytime.
+
+The workflow SSHs into EC2 and runs [`scripts/deploy-ec2.sh`](scripts/deploy-ec2.sh): `git fetch` + reset to `origin/main`, then `docker compose up --build -d`, then waits for `GET /health`.
 
 **One-time EC2 setup:** clone the repo, create `docker/.env` from `.env.example`, run `docker compose up --build -d` once manually. Ensure the security group allows SSH from GitHub Actions runners (not only your home IP).
 

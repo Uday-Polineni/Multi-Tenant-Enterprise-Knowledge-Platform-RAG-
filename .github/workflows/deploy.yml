@@ -9,6 +9,7 @@ on:
       - "docker/**"
       - "scripts/deploy-ec2.sh"
       - ".github/workflows/deploy.yml"
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -20,6 +21,9 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
+          port: 22
+          timeout: 60s
+          command_timeout: 30m
           script_stop: true
           script: |
             export DEPLOY_PATH="${{ secrets.EC2_DEPLOY_PATH }}"

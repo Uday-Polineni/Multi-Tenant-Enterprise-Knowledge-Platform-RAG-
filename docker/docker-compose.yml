@@ -1,4 +1,5 @@
 # Full stack: postgres + redis + api + worker + nginx (frontend + /api proxy)
+# Deploy: GitHub Actions runs scripts/deploy-ec2.sh on push to main (docker/** path).
 #
 # Setup:
 #   cp .env.example .env   # edit secrets
