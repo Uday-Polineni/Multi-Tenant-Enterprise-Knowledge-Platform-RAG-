@@ -1,4 +1,6 @@
-const SOURCE_REF_PATTERN = /\s*\((?:Source\s+\d+(?:\s*,\s*Source\s+\d+)*)\)/gi;
+// LLM may cite as (Source 1, Source 2) or shorthand (Source 1, 2, 4)
+const SOURCE_REF_PATTERN =
+  /\s*\(Source\s+\d+(?:\s*,\s*(?:Source\s+)?\d+)*\)/gi;
 
 export function buildSourceMap(citations) {
   const map = new Map();
