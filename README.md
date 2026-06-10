@@ -85,10 +85,14 @@ The workflow SSHs into EC2 and runs [`scripts/deploy-ec2.sh`](scripts/deploy-ec2
 
 | Secret | Value |
 |--------|--------|
-| `EC2_HOST` | Public hostname or IP (e.g. `ec2-….compute.amazonaws.com`) |
+| `EC2_HOST` | Hostname only — **no** `http://` (e.g. `ec2-3-141-104-224.us-east-2.compute.amazonaws.com`) |
 | `EC2_USER` | SSH user (e.g. `ubuntu`) |
-| `EC2_SSH_KEY` | Full contents of the `.pem` key file |
+| `EC2_SSH_KEY` | Full `.pem` file: `-----BEGIN RSA PRIVATE KEY-----` through `-----END RSA PRIVATE KEY-----` (paste as-is, with newlines) |
 | `EC2_DEPLOY_PATH` | *(optional)* Absolute path to the repo on the server; defaults to `~/Multi-Tenant-Enterprise-Knowledge-Platform-RAG-` |
+
+**EC2 security group:** inbound **SSH (22)** must allow GitHub Actions — use `0.0.0.0/0` for a demo VM, or your runners will time out (~60–120s) with no useful error.
+
+**If deploy fails:** open the run → **Deploy over SSH** → expand logs. Common causes: wrong `EC2_HOST`, malformed `EC2_SSH_KEY`, SSH blocked by security group, repo not cloned on EC2, or missing `docker/.env`.
 
 **Not automated:** first-time server provisioning, new `.env` variables, or GitHub secret changes — update those on EC2 or in repo settings, then push code or re-run the workflow.
 

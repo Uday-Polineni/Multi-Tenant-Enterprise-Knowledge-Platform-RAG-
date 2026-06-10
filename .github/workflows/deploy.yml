@@ -22,9 +22,40 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           port: 22
-          timeout: 60s
-          command_timeout: 30m
+          timeout: 120s
+          command_timeout: 45m
+          debug: true
           script_stop: true
           script: |
-            export DEPLOY_PATH="${{ secrets.EC2_DEPLOY_PATH }}"
-            bash "${DEPLOY_PATH:-$HOME/Multi-Tenant-Enterprise-Knowledge-Platform-RAG-}/scripts/deploy-ec2.sh"
+            set -euo pipefail
+            REPO_DIR="${{ secrets.EC2_DEPLOY_PATH }}"
+            REPO_DIR="${REPO_DIR:-$HOME/Multi-Tenant-Enterprise-Knowledge-Platform-RAG-}"
+            echo "==> Deploy target: $REPO_DIR"
+            if [ ! -d "$REPO_DIR/.git" ]; then
+              echo "ERROR: Repo not found at $REPO_DIR"
+              echo "On EC2 run: git clone https://github.com/Uday-Polineni/Multi-Tenant-Enterprise-Knowledge-Platform-RAG-.git"
+              exit 1
+            fi
+            cd "$REPO_DIR"
+            git fetch origin main
+            git reset --hard origin/main
+            cd docker
+            if [ ! -f .env ]; then
+              echo "ERROR: docker/.env missing — cp .env.example .env on the server first"
+              exit 1
+            fi
+            docker compose up --build -d
+            echo "Waiting for health check..."
+            for i in $(seq 1 36); do
+              if curl -sf http://localhost/health >/dev/null; then
+                echo "OK  GET /health"
+                docker compose ps
+                exit 0
+              fi
+              sleep 5
+            done
+            echo "ERROR: /health did not return OK within 180s"
+            docker compose ps
+            docker compose logs api --tail 40
+            docker compose logs web --tail 20
+            exit 1
