@@ -73,6 +73,23 @@ Open http://localhost:5173. Env reference: [`backend/.env.example`](backend/.env
 
 </details>
 
+### Continuous deployment (GitHub Actions)
+
+Pushes to `main` that touch `backend/`, `frontend/`, `docker/`, or the deploy script trigger [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml). The workflow SSHs into EC2 and runs [`scripts/deploy-ec2.sh`](scripts/deploy-ec2.sh): `git fetch` + reset to `origin/main`, then `docker compose up --build -d`, then waits for `GET /health`.
+
+**One-time EC2 setup:** clone the repo, create `docker/.env` from `.env.example`, run `docker compose up --build -d` once manually. Ensure the security group allows SSH from GitHub Actions runners (not only your home IP).
+
+**Repository secrets** (Settings → Secrets and variables → Actions):
+
+| Secret | Value |
+|--------|--------|
+| `EC2_HOST` | Public hostname or IP (e.g. `ec2-….compute.amazonaws.com`) |
+| `EC2_USER` | SSH user (e.g. `ubuntu`) |
+| `EC2_SSH_KEY` | Full contents of the `.pem` key file |
+| `EC2_DEPLOY_PATH` | *(optional)* Absolute path to the repo on the server; defaults to `~/Multi-Tenant-Enterprise-Knowledge-Platform-RAG-` |
+
+**Not automated:** first-time server provisioning, new `.env` variables, or GitHub secret changes — update those on EC2 or in repo settings, then push code or re-run the workflow.
+
 ---
 
 ## 1. System architecture
@@ -494,7 +511,7 @@ Uncached queries typically **8–12 seconds** (embed + hybrid retrieval + LLM). 
 | Topic routing | Keyword-based, not ML classifier |
 | Large docs | 250-page stress test: **3/100** — caps exist by design |
 | Reranker | Off by default; ~400MB model download when enabled |
-| Production deploy | Scripts + smoke check ready; EC2/Docker/HTTPS is operator setup |
+| Production deploy | GitHub Actions CD to EC2 (see Quick start); HTTPS needs an owned domain |
 
 ---
 
