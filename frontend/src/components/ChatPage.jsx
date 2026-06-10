@@ -12,6 +12,7 @@ import {
   splitAnswerParagraphs,
   stripSourceRefs,
 } from "../utils/citations.js";
+import { createId } from "../utils/id.js";
 
 function AssistantAnswer({ content, citations, onCitationError }) {
   const sourceMap = buildSourceMap(citations);
@@ -133,10 +134,10 @@ export default function ChatPage({
 
     setError("");
     setInput("");
-    const userMessage = { id: crypto.randomUUID(), role: "user", content: trimmed };
+    const userMessage = { id: createId(), role: "user", content: trimmed };
     setMessages((prev) => [...prev, userMessage]);
     setLoading(true);
-    const assistantId = crypto.randomUUID();
+    const assistantId = createId();
     setMessages((prev) => [
       ...prev,
       { id: assistantId, role: "assistant", content: "", citations: [], streaming: true },
